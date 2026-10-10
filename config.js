@@ -4,4 +4,4 @@
  * It looks like: https://script.google.com/macros/s/AKfy.........../exec
  * Do NOT put your PIN here.
  */
-window.GARDEN_API = 'PASTE_YOUR_WEB_APP_LINK_HERE';
+window.GARDEN_API = 'https://script.google.com/macros/s/AKfycbzi9OxAxxYy0UkqbViGaH_5CuAgnkh4z-pRrxIIxCsTb9UHS8CcgQD8QBbrIfrUmCIMTw/exec';
