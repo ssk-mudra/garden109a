@@ -29,25 +29,48 @@ function qtyText(g) {
 function isOwner() { return !!(S.boot && S.boot.owner); }
 function parseArgs(s) { var o = {}; String(s || '').split('&').forEach(function (kv) { var p = kv.split('='); if (p[0]) o[p[0]] = p[1] || ''; }); return o; }
 
-function api(fn) {
-  var args = Array.prototype.slice.call(arguments, 1);
+var UPLOAD_FNS = { savePhoto: 1, savePurchase: 1 };
+function apiUrl() {
   var url = String(window.GARDEN_API || '').trim();
-  if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) {
-    return Promise.reject(new Error('The garden link in config.js is missing or not right.'));
-  }
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) throw new Error('The garden link in config.js is missing or not right.');
+  return url;
+}
+function readJson(r) {
+  return r.text().then(function (t) {
+    try { return JSON.parse(t); } catch (e) {
+      throw new Error('The garden service answered with a web page, not data. In Apps Script, paste the new Code.gs and deploy a New version. Test: open your link with ?ping=1 at the end.');
+    }
+  });
+}
+function netFail() { throw new Error('Could not reach the garden service. Check your internet. If it continues, open your Apps Script link with ?ping=1 at the end to test it.'); }
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+function api(fn) {
+  var args = Array.prototype.slice.call(arguments, 1), url;
+  try { url = apiUrl(); } catch (e) { return Promise.reject(e); }
+  var q = url + '?fn=' + encodeURIComponent(fn) + '&args=' + encodeURIComponent(JSON.stringify(args)) + '&t=' + Date.now();
+  if (UPLOAD_FNS[fn] || q.length > 6000) return apiUpload(url, fn, args);
+  return fetch(q, { credentials: 'omit', redirect: 'follow' }).then(readJson, netFail).then(function (j) {
+    if (!j.ok) throw new Error(j.error || 'Something went wrong.');
+    return j.data;
+  });
+}
+// Big saves (photos): send, then collect the answer with a small read.
+function apiUpload(url, fn, args) {
+  var id = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   return fetch(url, {
-    method: 'POST', redirect: 'follow', credentials: 'omit',
+    method: 'POST', mode: 'no-cors', credentials: 'omit',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ fn: fn, args: args })
-  }).then(function (r) { return r.text(); }).then(function (t) {
-    var j;
-    try { j = JSON.parse(t); } catch (e) {
-      throw new Error('The garden service did not answer properly. In Apps Script, check Code.gs is updated and deployed as a New version with access "Anyone".');
+    body: JSON.stringify({ fn: fn, args: args, reqId: id })
+  }).then(function () { return collect(url, id, 0); }, netFail);
+}
+function collect(url, id, n) {
+  return fetch(url + '?result=' + id + '&t=' + Date.now(), { credentials: 'omit', redirect: 'follow' }).then(readJson, netFail).then(function (j) {
+    if (j.pending) {
+      if (n >= 30) throw new Error('The upload took too long. Check the Photo journal before trying again, so it is not saved twice.');
+      return wait(1500).then(function () { return collect(url, id, n + 1); });
     }
     if (!j.ok) throw new Error(j.error || 'Something went wrong.');
     return j.data;
-  }, function () {
-    throw new Error('No internet, or the garden service could not be reached. Try again.');
   });
 }
 
