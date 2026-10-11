@@ -3,6 +3,7 @@
 'use strict';
 
 /* ================= basics ================= */
+var APP_VERSION = '10 (12 Oct 2026)';
 var S = { boot: null, pin: '', preview: false, lists: {}, timer: null, toastT: null, pm: {}, vm: {}, add: null };
 try {
   S.pin = localStorage.getItem('g109a_pin') || '';
@@ -503,7 +504,7 @@ function renderChrome() {
   $('#hdrRight').innerHTML = real ? '<button type="button" class="btn sm" data-act="preview" aria-pressed="' + S.preview + '">Family view: ' + (S.preview ? 'on' : 'off') + '</button>' : '';
   $('#banner').innerHTML = real && S.preview ? '<div class="wrap"><p class="note">You are seeing what relatives see. Costs, vendors and logs are hidden. Turn family view off to edit.</p></div>' : '';
   $('#fab').hidden = !owner || cur === 'add' || cur === 'capture';
-  $('#ftr').innerHTML = '<span>Garden@109A, Chennai. Rain from the terrace goes back to the well.</span>' +
+  $('#ftr').innerHTML = '<span>Garden@109A, Chennai. Rain from the terrace goes back to the well. <span class="muted">App ' + APP_VERSION + '</span></span>' +
     (real ? (S.pin ? '<button type="button" class="linkbtn" data-act="signout">Sign out as owner</button>' : '<span>Signed in as owner</span>')
       : '<a href="#/signin">Owner sign-in</a>');
 }
