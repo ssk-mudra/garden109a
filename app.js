@@ -29,7 +29,7 @@ function qtyText(g) {
 function isOwner() { return !!(S.boot && S.boot.owner); }
 function parseArgs(s) { var o = {}; String(s || '').split('&').forEach(function (kv) { var p = kv.split('='); if (p[0]) o[p[0]] = p[1] || ''; }); return o; }
 
-var UPLOAD_FNS = { savePhoto: 1, savePurchase: 1 };
+var UPLOAD_FNS = { savePhoto: 1, savePurchase: 1, saveCapture: 1 };
 function apiUrl() {
   var url = String(window.GARDEN_API || '').trim();
   if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) throw new Error('The garden link in config.js is missing or not right.');
@@ -46,6 +46,7 @@ function netFail() { throw new Error('Could not reach the garden service. Check 
 function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 function api(fn) {
   var args = Array.prototype.slice.call(arguments, 1), url;
+  if (/^(save|update|delete|file|skip|renumber|add)/.test(fn)) S.calCache = {};
   try { url = apiUrl(); } catch (e) { return Promise.reject(e); }
   var q = url + '?fn=' + encodeURIComponent(fn) + '&args=' + encodeURIComponent(JSON.stringify(args)) + '&t=' + Date.now();
   if (UPLOAD_FNS[fn] || q.length > 6000) return apiUpload(url, fn, args);
@@ -104,7 +105,8 @@ var IC = {
   pot: '<path d="M5 9h14l-2 11H7z"/><path d="M4 9h16"/><path d="M12 9V5"/>',
   repeat: '<path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M20 4v5h-5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
-  warn: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17h.01"/>'
+  warn: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17h.01"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'
 };
 function icon(name, size, cls) {
   return '<svg class="ic ' + (cls || '') + '" width="' + (size || 20) + '" height="' + (size || 20) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (IC[name] || '') + '</svg>';
@@ -331,12 +333,24 @@ function exifDate(v, t) {
     var u16 = function (o) { return v.getUint16(o, le); }, u32 = function (o) { return v.getUint32(o, le); };
     var str = function (o, n) { var s = ''; for (var i = 0; i < n; i++) { var c = v.getUint8(o + i); if (!c) break; s += String.fromCharCode(c); } return s; };
     var scan = function (start, want) { var n = u16(start); for (var i = 0; i < n; i++) { var e = start + 2 + i * 12, tag = u16(e); if (tag in want) want[tag] = e; } return want; };
-    var a = scan(t + u32(t + 4), { 34665: -1, 306: -1 });
-    var ds = null;
+    var a = scan(t + u32(t + 4), { 34665: -1, 306: -1, 34853: -1 });
+    var ds = null, gps = null;
+    if (a[34853] > 0) {
+      var g = scan(t + u32(a[34853] + 8), { 1: -1, 2: -1, 3: -1, 4: -1 });
+      var rat = function (e) { var o = t + u32(e + 8), v = 0; for (var k = 0; k < 3; k++) { var n = u32(o + k * 8), dn = u32(o + k * 8 + 4); v += (dn ? n / dn : 0) / Math.pow(60, k); } return v; };
+      if (g[2] > 0 && g[4] > 0) {
+        var lat = rat(g[2]), lon = rat(g[4]);
+        if (g[1] > 0 && String.fromCharCode(v.getUint8(g[1] + 8)) === 'S') lat = -lat;
+        if (g[3] > 0 && String.fromCharCode(v.getUint8(g[3] + 8)) === 'W') lon = -lon;
+        if (lat || lon) gps = { lat: lat, lon: lon };
+      }
+    }
     if (a[34665] > 0) { var b = scan(t + u32(a[34665] + 8), { 36867: -1 }); if (b[36867] > 0) ds = str(t + u32(b[36867] + 8), 19); }
     if (!ds && a[306] > 0) ds = str(t + u32(a[306] + 8), 19);
     var m = ds && ds.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2})/);
-    return m && m[1] !== '0000' ? { date: m[1] + '-' + m[2] + '-' + m[3], time: m[4] + ':' + m[5] } : null;
+    var out = m && m[1] !== '0000' ? { date: m[1] + '-' + m[2] + '-' + m[3], time: m[4] + ':' + m[5] } : null;
+    if (gps) { out = out || {}; out.gps = gps; }
+    return out;
   } catch (e) { return null; }
 }
 function fromTs(ms) {
@@ -422,10 +436,11 @@ function openLb(key, start) {
   function draw() {
     var p = list[k];
     lb.innerHTML = '<div class="lb-in"><img src="' + imgUrl(p.fileId, 1800) + '" alt="' + esc(photoAlt(p)) + '">' +
-      '<div class="lb-cap">' + caption(p) + '</div><div class="lb-ctl">' +
+      '<div class="lb-cap">' + detailsHtml(p) + '</div><div class="lb-ctl">' +
       (list.length > 1 ? '<button type="button" data-l="prev" aria-label="Previous photo">' + icon('back') + '</button><button type="button" data-l="next" aria-label="Next photo">' + icon('next') + '</button>' : '') +
       '<button type="button" data-l="close" aria-label="Close">' + icon('close') + '</button></div>' +
-      (isOwner() && p.fileId ? '<a class="btn sm lb-edit" href="#/photo/' + encodeURIComponent(p.fileId) + '">Edit details</a>' : '') + '</div>';
+      (isOwner() && p.fileId ? '<div class="row gap" style="justify-content:center"><a class="btn sm lb-edit" href="#/photo/' + encodeURIComponent(p.fileId) + '">Edit details</a>' +
+        '<button type="button" class="btn sm lb-edit" data-l="share">Share / Google Photos</button></div>' : '') + '</div>';
   }
   function close() { lb.hidden = true; lb.innerHTML = ''; document.removeEventListener('keydown', onKey); S.lbClose = null; if (before && before.focus && !lb.dataset.nav) before.focus(); lb.dataset.nav = ''; }
   S.lbClose = close;
@@ -436,6 +451,7 @@ function openLb(key, start) {
     if (!b) { if (e.target === lb) close(); return; }
     var a = b.dataset.l;
     if (a === 'close') { close(); return; }
+    if (a === 'share') { shareLabelled(list[k]); return; }
     step(a === 'next' ? 1 : -1);
     var again = $('[data-l="' + a + '"]', lb); if (again) again.focus();
   };
@@ -476,8 +492,9 @@ function route() {
 }
 function renderChrome() {
   var owner = isOwner(), real = S.boot && S.boot.realOwner, cur = route().page;
-  var pub = [['', 'Home', 'home'], ['gallery', 'Gallery', 'gallery'], ['plants', 'Plants', 'plants'], ['varieties', 'Varieties', 'varieties'], ['fish', 'Fish', 'fish']];
-  var own = [['add', 'Add photo', 'add'], ['photos', 'Photos', 'photos'], ['log', 'Log', 'log'], ['pots', 'Pots', 'pots'], ['buy', 'Buy', 'buy'], ['inputs', 'Inputs', 'inputs'], ['masters', 'Masters', 'masters'], ['dash', 'Dashboard', 'dash']];
+  var pub = [['', 'Home', 'home'], ['gallery', 'Gallery', 'gallery'], ['calendar', 'Calendar', 'calendar'], ['plants', 'Plants', 'plants'], ['varieties', 'Varieties', 'varieties'], ['fish', 'Fish', 'fish']];
+  var rvN = S.boot && S.boot.captureCount ? ' (' + S.boot.captureCount + ')' : '';
+  var own = [['capture', 'Capture', 'capture'], ['review', 'Review' + rvN, 'review'], ['add', 'Add photo', 'add'], ['photos', 'Photos', 'photos'], ['log', 'Log', 'log'], ['pots', 'Pots', 'pots'], ['buy', 'Buy', 'buy'], ['inputs', 'Inputs', 'inputs'], ['masters', 'Masters', 'masters'], ['dash', 'Dashboard', 'dash']];
   function link(x) {
     var on = cur === x[2] || (x[2] === 'plants' && cur === 'plant') || (x[2] === 'varieties' && cur === 'variety') || (x[2] === 'pots' && cur === 'pot') || (x[2] === 'photos' && cur === 'photo');
     return '<a class="nav-a' + (on ? ' on' : '') + '" href="#/' + x[0] + '"' + (on ? ' aria-current="page"' : '') + '>' + x[1] + '</a>';
@@ -485,7 +502,7 @@ function renderChrome() {
   $('#nav').innerHTML = pub.map(link).join('') + (owner ? '<span class="nav-sep" aria-hidden="true"></span>' + own.map(link).join('') : '');
   $('#hdrRight').innerHTML = real ? '<button type="button" class="btn sm" data-act="preview" aria-pressed="' + S.preview + '">Family view: ' + (S.preview ? 'on' : 'off') + '</button>' : '';
   $('#banner').innerHTML = real && S.preview ? '<div class="wrap"><p class="note">You are seeing what relatives see. Costs, vendors and logs are hidden. Turn family view off to edit.</p></div>' : '';
-  $('#fab').hidden = !owner || cur === 'add';
+  $('#fab').hidden = !owner || cur === 'add' || cur === 'capture';
   $('#ftr').innerHTML = '<span>Garden@109A, Chennai. Rain from the terrace goes back to the well.</span>' +
     (real ? (S.pin ? '<button type="button" class="linkbtn" data-act="signout">Sign out as owner</button>' : '<span>Signed in as owner</span>')
       : '<a href="#/signin">Owner sign-in</a>');
@@ -497,8 +514,8 @@ function render() {
   if (S.io) { S.io.disconnect(); S.io = null; }
   app.onclick = null; app.onchange = null;
   var r = route(), owner = isOwner();
-  var pub = { home: viewHome, gallery: viewGallery, plants: viewPlants, plant: viewPlant, varieties: viewVarieties, variety: viewVariety, fish: viewFish, signin: viewSignIn };
-  var own = { add: viewAdd, photos: viewPhotos, photo: viewPhoto, log: viewLog, pots: viewPots, pot: viewPot, buy: viewBuy, inputs: viewInputs, masters: viewMasters, dash: viewDash };
+  var pub = { home: viewHome, gallery: viewGallery, calendar: viewCalendar, plants: viewPlants, plant: viewPlant, varieties: viewVarieties, variety: viewVariety, fish: viewFish, signin: viewSignIn };
+  var own = { capture: viewCapture, review: viewReview, add: viewAdd, photos: viewPhotos, photo: viewPhoto, log: viewLog, pots: viewPots, pot: viewPot, buy: viewBuy, inputs: viewInputs, masters: viewMasters, dash: viewDash };
   renderChrome();
   var fn = pub[r.page] || (owner ? own[r.page] : null) || (own[r.page] ? viewNeedOwner : viewNotFound);
   try { fn(r.arg); } catch (err) {
@@ -519,6 +536,7 @@ function load() {
     saveBoot(b);
     var first = !cached; S.boot = b; indexBoot();
     if (first || PASSIVE[route().page]) render(); else renderChrome();
+    setTimeout(function () { flushQueue(false); }, 1500);
   }).catch(function (err) {
     if (cached) { toast('Showing your saved copy. ' + err.message, 'err'); return; }
     app.innerHTML = '<div class="empty"><h1>Could not open the garden</h1><p>' + esc(err.message) + '</p><button type="button" class="btn" data-act="reload">Try again</button></div>';
@@ -538,7 +556,9 @@ document.addEventListener('click', function (e) {
   e.preventDefault(); ACT[a.dataset.act](a, e);
 });
 $('#fab').addEventListener('click', function () {
-  var r = route(), arg = '';
+  var r0 = route();
+  if (['plant', 'pot', 'variety'].indexOf(r0.page) < 0) { location.hash = '#/capture'; return; }
+  var r = r0, arg = '';
   if (r.page === 'plant') arg = 'plant=' + r.arg;
   else if (r.page === 'pot') arg = 'pot=' + r.arg;
   else if (r.page === 'variety' && S.vm[r.arg]) arg = 'plant=' + S.vm[r.arg].plantId + '&variety=' + r.arg;
@@ -916,7 +936,7 @@ function viewAdd(arg) {
       '<div class="pick"><label class="pick-btn"><input type="file" accept="image/*" capture="environment" id="fCam">' + icon('camera', 28) + '<span>Take photo</span></label>' +
       '<label class="pick-btn"><input type="file" accept="image/*" multiple id="fGal">' + icon('image', 28) + '<span>' + (coarse ? 'Choose from phone' : 'Choose files') + '</span></label></div>' +
       (coarse ? '' : '<div class="drop" id="drop">Or drag photos here from your computer</div>') +
-      '<ul class="flist" id="flist"></ul>' +
+      '<ul class="flist" id="flist"></ul><div id="aTool"></div>' +
       '<fieldset class="fs"><legend>Plant</legend><div class="f2">' +
         '<div class="field"><label for="aPot">Pot ref</label><input id="aPot" list="potRefs" placeholder="e.g. T036" autocomplete="off" autocapitalize="characters" value="' + esc(pot ? pot.ref : '') + '">' + potDatalist('potRefs') +
           '<p class="hint" id="aPotMsg">Optional. Fills plant, variety and colours.</p></div>' +
@@ -1006,10 +1026,16 @@ function bindAdd(pre, pot) {
     var files = Array.prototype.slice.call(list || []).filter(function (f) { return /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic)$/i.test(f.name); });
     return Promise.all(files.map(function (file) {
       return readExif(file).then(function (ex) {
-        var d = ex || (source === 'Mobile camera' ? { date: today(), time: nowTime() } : fromTs(file.lastModified)) || { date: today(), time: nowTime() };
-        A.files.push({ k: A.seq++, file: file, url: URL.createObjectURL(file), date: d.date, time: d.time, source: source, status: '', msg: '' });
+        var d = (ex && ex.date ? ex : null) || (source === 'Mobile camera' ? { date: today(), time: nowTime() } : fromTs(file.lastModified)) || { date: today(), time: nowTime() };
+        A.files.push({ k: A.seq++, file: file, url: URL.createObjectURL(file), date: d.date, time: d.time, gps: ex && ex.gps, source: source, status: '', msg: '' });
       });
-    })).then(function () { drawFiles(); refreshBloom(); });
+    })).then(function () {
+      drawFiles(); refreshBloom();
+      if (!A.tool && A.files[0]) A.tool = mountColourTool($('#aTool'), A.files[0].file, function (ci) {
+        var names = ci.main.map(function (p) { return p.name; });
+        if (names.length) colPick.set(names.filter(function (n, i) { return names.indexOf(n) === i; }));
+      });
+    });
   }
   var coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
   $('#fCam').addEventListener('change', function (e) { addFiles(e.target.files, 'Mobile camera'); e.target.value = ''; });
@@ -1112,13 +1138,20 @@ function bindAdd(pre, pot) {
       var v = S.vm[varietyId];
       var base = { potUid: curPot ? curPot.uid : '', potNo: curPot ? curPot.ref : '', plantId: pid, plantName: plantName(pid),
         varietyId: varietyId || '', varietyFolder: v ? varietyId + ' ' + (v.trade || v.name) : 'General', stage: st, colour: colPick.get(),
+        colourCodes: A.tool ? A.tool.get().main.map(function (p) { return p.hex; }) : [],
+        edge: A.tool ? A.tool.get().edge.map(function (p) { return p.name; }) : [], centre: A.tool ? A.tool.get().centre.map(function (p) { return p.name; }) : [],
         remark: $('#aRemark').value.trim(), archive: arch, family: $('#aFamily').checked, gallery: $('#aGallery').checked };
       var n = todo.length, started = 0;
       function one(f, first) {
         f.msg = 'Uploading…'; f.status = ''; drawFiles();
-        return resizeToJpeg(f.file, 1600, 0.8).then(function (b64) {
-          var meta = Object.assign({}, base, { date: f.date, time: f.time, source: f.source, bloom: bloom, countFlower: first && count });
-          return api('savePhoto', S.pin, meta, b64);
+        var meta = Object.assign({}, base, { date: f.date, time: f.time, source: f.source, bloom: bloom, countFlower: first && count, who: whoAmI(), gps: f.gps });
+        var imgs;
+        return prepareImages(f.file, Object.assign({ shotBy: whoAmI() }, meta)).then(function (r) {
+          imgs = r;
+          return api('savePhoto', S.pin, meta, r.clean);
+        }).then(function (res) {
+          if (!imgs.labelled) return res;
+          return api('saveLabel', S.pin, res.fileId, imgs.labelled).then(function (lid) { res.labelId = lid; return res; }, function () { return res; });
         }).then(function (res) {
           if (bloom === 'new' && res.bloom) {
             bloom = res.bloom;
@@ -1126,7 +1159,8 @@ function bindAdd(pre, pot) {
           }
           if (first) count = false;
           f.status = 'done'; f.msg = 'Saved'; ok++;
-          S.boot.photos.unshift(Object.assign({}, base, { date: f.date, time: f.time, colour: base.colour.join(', '), bloom: res.bloom, fileId: res.fileId }));
+          S.boot.photos.unshift(Object.assign({}, base, { date: f.date, time: f.time, colour: base.colour.join(', '), colourCodes: (base.colourCodes || []).join(', '),
+            edge: (base.edge || []).join(', '), centre: (base.centre || []).join(', '), shotBy: whoAmI(), bloom: res.bloom, fileId: res.fileId, labelId: res.labelId || '' }));
         }).catch(function (err) { f.status = 'error'; f.msg = 'Not saved: ' + err.message; bad++; }).then(function () {
           drawFiles(); btn.textContent = 'Saved ' + (ok + bad) + ' of ' + n + '…';
         });
@@ -1143,7 +1177,7 @@ function bindAdd(pre, pot) {
       else {
         toast(ok + (ok === 1 ? ' photo saved.' : ' photos saved.'));
         A.files.forEach(function (f) { URL.revokeObjectURL(f.url); });
-        A.files = []; drawFiles();
+        A.files = []; drawFiles(); A.tool = null; $('#aTool').innerHTML = '';
         $('#aRemark').value = '';
       }
     }).catch(function (err) { toast(err.message, 'err'); })
@@ -1616,7 +1650,7 @@ function viewPhoto(fileId) {
           '<label class="sw"><input type="checkbox" id="peFamily"' + (p.family === false ? '' : ' checked') + '><span>Show to family</span></label>' +
           '<label class="sw"><input type="checkbox" id="peGallery"' + (p.gallery ? ' checked' : '') + '><span>Show in gallery</span></label>' +
         '</fieldset>' +
-        '<div class="actions row gap"><button class="btn btn-primary lg" type="submit">Save changes</button><button class="btn lg pe-del" type="button" id="peDel">Delete photo</button></div>' +
+        '<div class="actions row gap"><button class="btn btn-primary lg" type="submit">Save changes</button><button class="btn lg" type="button" id="peShare">Share / Google Photos</button><button class="btn lg pe-del" type="button" id="peDel">Delete photo</button></div>' +
       '</form></div>';
     S.lists.pe = [p];
     var pick = bindColourPicker('peColours'), curPot = pot;
@@ -1650,9 +1684,12 @@ function viewPhoto(fileId) {
           x.potNo = curPot ? curPot.ref : '';
         });
         saveBoot(S.boot);
-        toast('Changes saved.');
+        toast('Changes saved. Updating the labelled copy…');
+        var ph = Object.assign({}, p, ch, { colour: ch.colour.join(', '), potNo: curPot ? curPot.ref : '' });
+        relabel(ph).then(function (lid) { p.labelId = lid; toast('Changes saved and label updated.'); }, function () {});
       }).catch(function (err) { toast(err.message, 'err'); }).then(function () { btn.disabled = false; });
     });
+    $('#peShare').addEventListener('click', function () { shareLabelled(p); });
     $('#peDel').addEventListener('click', function () {
       if (!window.confirm('Delete this photo? It goes to Google Drive trash, where you can restore it for 30 days.')) return;
       api('deletePhoto', S.pin, fileId).then(function () {
@@ -1692,14 +1729,26 @@ var REC = {
 function viewMasters() {
   S.openM = S.openM || {};
   var open = function (k) { return S.openM[k] ? ' open' : ''; };
+  var st = (S.boot.meta && S.boot.meta.settings) || {};
   app.innerHTML = '<div class="page-h"><h1>Masters</h1><p class="muted">Add or change the choices used in the app. Hidden items stay in old records but are not offered for new ones.</p></div>' +
-    '<h2 style="margin:6px 0 10px">Choice lists</h2>' + MASTER_LISTS.map(function (m) {
+    '<details class="care" data-mk="S"' + open('S') + '><summary>Photo label</summary><div class="body"><form id="stForm" class="form"><div class="f2">' +
+      '<div class="field"><label for="stBrand">Brand on photos</label><input id="stBrand" value="' + esc(st.brand || '@109A') + '"></div>' +
+      '<div class="field"><label for="stPlace">Place shown on photos</label><input id="stPlace" value="' + esc(st.place || 'Chennai') + '"><p class="hint">Shown instead of the exact address.</p></div></div>' +
+      '<label class="sw"><input type="checkbox" id="stGps"' + (st.gps ? ' checked' : '') + '><span><strong>Keep exact GPS inside photo files</strong><br><span class="hint">Off is safer: anyone you share a photo with could see where it was taken.</span></span></label>' +
+      '<button class="btn btn-primary" type="submit">Save</button></form></div></details>' +
+    '<h2 style="margin:20px 0 10px">Choice lists</h2>' + MASTER_LISTS.map(function (m) {
       return '<details class="care" data-mk="L:' + esc(m[0]) + '"' + open('L:' + m[0]) + '><summary>' + esc(m[1]) + ' <span class="muted sm">' + ((S.boot.lists[m[0]] || []).length) + '</span></summary><div class="body">' + listEditor(m[0]) + '</div></details>';
     }).join('') +
     '<h2 style="margin:28px 0 10px">Records</h2>' + Object.keys(REC).map(function (k) {
       return '<details class="care" data-mk="R:' + k + '"' + open('R:' + k) + '><summary>' + esc(REC[k].title) + ' <span class="muted sm">' + REC[k].list().length + '</span></summary><div class="body" id="rec_' + k + '">' + recEditor(k, null) + '</div></details>';
     }).join('');
   $$('details[data-mk]', app).forEach(function (d) { d.addEventListener('toggle', function () { S.openM[d.dataset.mk] = d.open; }); });
+  $('#stForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    api('saveSettings', S.pin, { brand: $('#stBrand').value, place: $('#stPlace').value, gps: $('#stGps').checked }).then(function (ns) {
+      S.boot.meta.settings = ns; saveBoot(S.boot); toast('Photo label saved. New photos will use it.');
+    }).catch(function (err) { toast(err.message, 'err'); });
+  });
   app.onclick = mastersClick;
   app.onchange = function (e) {
     var sw = e.target.closest('.ml-sw'); if (!sw) return;
@@ -1786,6 +1835,914 @@ function saveRec(e) {
     S.openM['R:' + kind] = true;
     return refreshBoot().then(function () { if (route().page === 'masters') render(); });
   }).catch(function (err) { toast(err.message, 'err'); btn.disabled = false; });
+}
+
+/* ================= details written inside the photo file (EXIF) ================= */
+function asciiOnly(s) { return String(s || '').replace(/\s*[·•]\s*/g, ' - ').replace(/[–—]/g, '-').replace(/[^\x20-\x7E]/g, '').slice(0, 1000); }
+function buildTiff(ifds) {
+  var SZ = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1 };
+  function bytesOf(e) {
+    if (e.type === 2) { var a = asciiOnly(e.value); var b = new Uint8Array(a.length + 1); for (var i = 0; i < a.length; i++) b[i] = a.charCodeAt(i); return b; }
+    if (e.type === 1 || e.type === 7) return new Uint8Array(e.value);
+    var vals = e.value, out = new Uint8Array(vals.length * SZ[e.type]), dv = new DataView(out.buffer);
+    vals.forEach(function (x, i) {
+      if (e.type === 3) dv.setUint16(i * 2, x); else if (e.type === 4) dv.setUint32(i * 4, x);
+      else { dv.setUint32(i * 8, x[0]); dv.setUint32(i * 8 + 4, x[1]); }
+    });
+    return out;
+  }
+  var off = 8, starts = [];
+  ifds.forEach(function (ifd) {
+    ifd.sort(function (a, b) { return a.tag - b.tag; });
+    starts.push(off);
+    var d = off + 2 + ifd.length * 12 + 4;
+    ifd.forEach(function (e) { e._b = e.ptr !== undefined ? null : bytesOf(e); var len = e._b ? e._b.length : 4; if (len > 4) { e._off = d; d += len + (len % 2); } });
+    ifd._end = d; off = d;
+  });
+  var buf = new Uint8Array(off), dv = new DataView(buf.buffer);
+  buf[0] = 0x4D; buf[1] = 0x4D; dv.setUint16(2, 42); dv.setUint32(4, 8);
+  ifds.forEach(function (ifd, k) {
+    var p = starts[k];
+    dv.setUint16(p, ifd.length); p += 2;
+    ifd.forEach(function (e) {
+      dv.setUint16(p, e.tag);
+      if (e.ptr !== undefined) { dv.setUint16(p + 2, 4); dv.setUint32(p + 4, 1); dv.setUint32(p + 8, starts[e.ptr]); }
+      else {
+        var cnt = e.type === 2 || e.type === 1 || e.type === 7 ? e._b.length : e.value.length;
+        dv.setUint16(p + 2, e.type); dv.setUint32(p + 4, cnt);
+        if (e._b.length > 4) { dv.setUint32(p + 8, e._off); buf.set(e._b, e._off); } else buf.set(e._b, p + 8);
+      }
+      p += 12;
+    });
+    dv.setUint32(p, 0);
+  });
+  return buf;
+}
+function gpsRat(x) { x = Math.abs(x); var d = Math.floor(x), m = Math.floor((x - d) * 60), sc = Math.round(((x - d) * 60 - m) * 60 * 100); return [[d, 1], [m, 1], [sc, 100]]; }
+/** Adds date, description, author, copyright and (optionally) GPS into a JPEG (base64 in, base64 out). */
+function addExif(b64, o) {
+  try {
+    var bin = atob(b64), jpg = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) jpg[i] = bin.charCodeAt(i);
+    if (jpg[0] !== 0xFF || jpg[1] !== 0xD8) return b64;
+    var dt = (o.date || today()).replace(/-/g, ':') + ' ' + (o.time || '00:00') + ':00';
+    var ifd0 = [{ tag: 0x010E, type: 2, value: o.desc }, { tag: 0x0131, type: 2, value: 'Garden@109A app' }, { tag: 0x0132, type: 2, value: dt },
+      { tag: 0x013B, type: 2, value: o.artist || 'Garden@109A' }, { tag: 0x8298, type: 2, value: o.copyright || '@109A' }, { tag: 0x8769, ptr: 1 }];
+    var exif = [{ tag: 0x9000, type: 7, value: [48, 50, 51, 50] }, { tag: 0x9003, type: 2, value: dt }, { tag: 0x9004, type: 2, value: dt }];
+    var ifds = [ifd0, exif];
+    if (o.gps && isFinite(o.gps.lat) && isFinite(o.gps.lon)) {
+      ifd0.push({ tag: 0x8825, ptr: 2 });
+      ifds.push([{ tag: 0, type: 1, value: [2, 3, 0, 0] }, { tag: 1, type: 2, value: o.gps.lat < 0 ? 'S' : 'N' }, { tag: 2, type: 5, value: gpsRat(o.gps.lat) },
+        { tag: 3, type: 2, value: o.gps.lon < 0 ? 'W' : 'E' }, { tag: 4, type: 5, value: gpsRat(o.gps.lon) }]);
+    }
+    var tiff = buildTiff(ifds), seg = new Uint8Array(4 + 6 + tiff.length);
+    seg[0] = 0xFF; seg[1] = 0xE1; seg[2] = ((seg.length - 2) >> 8) & 255; seg[3] = (seg.length - 2) & 255;
+    [0x45, 0x78, 0x69, 0x66, 0, 0].forEach(function (x, k) { seg[4 + k] = x; });
+    seg.set(tiff, 10);
+    var pos = 2;
+    if (jpg[2] === 0xFF && jpg[3] === 0xE0) pos = 4 + ((jpg[4] << 8) | jpg[5]);
+    var out = new Uint8Array(jpg.length + seg.length);
+    out.set(jpg.subarray(0, pos), 0); out.set(seg, pos); out.set(jpg.subarray(pos), pos + seg.length);
+    var str = '';
+    for (var j = 0; j < out.length; j += 0x8000) str += String.fromCharCode.apply(null, out.subarray(j, j + 0x8000));
+    return btoa(str);
+  } catch (e) { return b64; }
+}
+
+/* ================= the label strip under the photo ================= */
+function setting(k, d) { var st = (S.boot && S.boot.meta && S.boot.meta.settings) || {}; return st[k] !== undefined && st[k] !== '' ? st[k] : d; }
+/** d: plantId, varietyId, potNo, stage, date, time, colour, colourCodes, edge, centre, shotBy */
+function labelInfo(d) {
+  if (!d.potNo && d.potUid) { var pt = (S.boot.pots || []).filter(function (x) { return x.uid === d.potUid; })[0]; if (pt) d = Object.assign({}, d, { potNo: pt.ref }); }
+  var v = S.vm[d.varietyId], cols = Array.isArray(d.colour) ? d.colour : splitColours(d.colour);
+  var edge = Array.isArray(d.edge) ? d.edge : splitColours(d.edge), centre = Array.isArray(d.centre) ? d.centre : splitColours(d.centre);
+  var colourText = cols.join(', ') + (edge.length ? (cols.length ? ', ' : '') + edge.join(' & ') + ' edge' : '') + (centre.length ? (cols.length || edge.length ? ', ' : '') + centre.join(' & ') + ' centre' : '');
+  return {
+    brand: setting('brand', '@109A'),
+    l1: [plantName(d.plantId), v ? varLabel(v) : '', d.potNo ? 'Pot ' + d.potNo : '', d.stage].filter(Boolean).join(' · '),
+    l2: [fmtDate(d.date) + (d.time ? ' ' + d.time : ''), setting('place', 'Chennai')].filter(Boolean).join(' · '),
+    l3: [colourText, v && v.petal ? v.petal + ' petal' : '', d.shotBy ? 'by ' + d.shotBy : ''].filter(Boolean).join(' · '),
+    codes: Array.isArray(d.colourCodes) ? d.colourCodes : splitColours(d.colourCodes)
+  };
+}
+function exifFor(d) {
+  var L = labelInfo(d);
+  return { date: d.date, time: d.time, desc: [L.brand, L.l1, L.l2, L.l3].filter(Boolean).join(' | '), artist: d.shotBy || 'Garden@109A', copyright: L.brand + ' Garden', gps: setting('gps', false) ? d.gps : null };
+}
+function loadImg(src) {
+  return new Promise(function (res, rej) {
+    var img = new Image();
+    img.onload = function () { res(img); };
+    img.onerror = function () { rej(new Error('this photo type cannot be read here; please use JPG')); };
+    img.src = src;
+  });
+}
+function cleanFromImg(img, max, q) {
+  var w = img.naturalWidth, h = img.naturalHeight, sc = Math.min(1, (max || 1600) / Math.max(w, h));
+  var c = document.createElement('canvas'); c.width = Math.round(w * sc); c.height = Math.round(h * sc);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', q || 0.8).split(',')[1];
+}
+function labelledFromImg(img, d) {
+  var L = labelInfo(d), w = img.naturalWidth, h = img.naturalHeight, sc = Math.min(1, 1280 / Math.max(w, h));
+  var W = Math.round(w * sc), H = Math.round(h * sc), fs = Math.max(15, Math.round(W * 0.027)), pad = Math.round(fs * 0.9), lh = Math.round(fs * 1.45);
+  var c = document.createElement('canvas'), ctx = c.getContext('2d');
+  var font = function (wt, size) { return wt + ' ' + size + 'px Manrope, "Segoe UI", Roboto, Arial, sans-serif'; };
+  function wrap(text, maxW, f) {
+    ctx.font = f;
+    var words = String(text).split(' '), lines = [], cur = '';
+    words.forEach(function (wd) { var t = cur ? cur + ' ' + wd : wd; if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = wd; } else cur = t; });
+    if (cur) lines.push(cur);
+    return lines;
+  }
+  c.width = W; c.height = H;
+  var brandF = font(800, Math.round(fs * 1.15)), boldF = font(700, fs), normF = font(500, Math.round(fs * 0.92));
+  ctx.font = brandF; var bw = ctx.measureText(L.brand).width + fs * 0.8;
+  var dot = L.codes.length ? L.codes.length * fs * 0.9 + fs * 0.3 : 0;
+  var lines1 = wrap(L.l1, W - pad * 2 - bw, boldF), lines2 = wrap(L.l2, W - pad * 2, normF), lines3 = wrap(L.l3, W - pad * 2 - dot, normF);
+  var stripH = pad * 2 + lh * (lines1.length + lines2.length + lines3.length);
+  c.height = H + stripH;
+  ctx.drawImage(img, 0, 0, W, H);
+  ctx.fillStyle = '#1B2A21'; ctx.fillRect(0, H, W, stripH);
+  ctx.textBaseline = 'middle';
+  var y = H + pad + lh / 2;
+  ctx.font = brandF; ctx.fillStyle = '#9AD6B6'; ctx.fillText(L.brand, pad, y);
+  ctx.font = boldF; ctx.fillStyle = '#FFFFFF';
+  lines1.forEach(function (t, i) { ctx.fillText(t, pad + bw, y); if (i < lines1.length - 1) y += lh; });
+  y += lh;
+  ctx.font = normF; ctx.fillStyle = '#D7E3DA';
+  lines2.forEach(function (t) { ctx.fillText(t, pad, y); y += lh; });
+  L.codes.forEach(function (hx, i) {
+    ctx.beginPath(); ctx.arc(pad + fs * 0.4 + i * fs * 0.9, y, fs * 0.35, 0, Math.PI * 2); ctx.fillStyle = hx; ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.stroke();
+  });
+  ctx.font = normF; ctx.fillStyle = '#D7E3DA';
+  lines3.forEach(function (t, i) { ctx.fillText(t, pad + (i === 0 ? dot : 0), y); y += lh; });
+  return c.toDataURL('image/jpeg', 0.82).split(',')[1];
+}
+/** Clean copy + labelled copy from one photo file, both with details inside the file. */
+function prepareImages(file, d) {
+  var url = URL.createObjectURL(file);
+  return loadImg(url).then(function (img) {
+    URL.revokeObjectURL(url);
+    var ex = exifFor(d), labelled = null;
+    try { labelled = addExif(labelledFromImg(img, d), ex); } catch (e) { labelled = null; } // the photo still saves without a label
+    return { clean: addExif(cleanFromImg(img, 1600, 0.8), ex), labelled: labelled };
+  }, function (e) { URL.revokeObjectURL(url); throw e; });
+}
+/** Make a new labelled copy from the photo stored in Drive (after edits or for older photos). */
+function relabel(d) {
+  return api('getPhotoData', S.pin, d.fileId).then(function (data) { return loadImg('data:' + (data.mime || 'image/jpeg') + ';base64,' + data.b64); })
+    .then(function (img) { return addExif(labelledFromImg(img, d), exifFor(d)); })
+    .then(function (b64) { return api('saveLabel', S.pin, d.fileId, b64); })
+    .then(function (labelId) {
+      S.boot.photos.forEach(function (x) { if (x.fileId === d.fileId) x.labelId = labelId; });
+      return labelId;
+    });
+}
+/** Share the labelled photo through the phone's share menu (pick Google Photos to save it there). */
+function shareLabelled(p) {
+  var ready = p.labelId ? Promise.resolve(p.labelId) : relabel(p);
+  toast('Preparing the labelled photo…');
+  return ready.then(function (labelId) { p.labelId = labelId; return api('getPhotoData', S.pin, labelId); }).then(function (data) {
+    var bin = atob(data.b64), arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    var name = (data.name || 'garden109a.jpg').replace(/[^\w.-]+/g, '_');
+    var file = new File([arr], name, { type: 'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      return navigator.share({ files: [file], title: labelInfo(p).l1 }).then(function () { toast('Shared.'); }, function () {});
+    }
+    var a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    toast('Saved to your Downloads. Open Google Photos to back it up.');
+  }).catch(function (err) { toast(err.message, 'err'); });
+}
+/** All details under a photo, never over it. */
+function detailsHtml(p) {
+  var L = labelInfo(p);
+  return '<div class="pdet"><div class="pdet-1"><span class="pdet-brand">' + esc(L.brand) + '</span> ' + esc(L.l1 || 'Garden photo') + (p.archive ? '<span class="cap-old">Old photo</span>' : '') + '</div>' +
+    '<div class="pdet-2">' + esc(L.l2) + '</div>' +
+    (L.l3 ? '<div class="pdet-3">' + L.codes.map(function (h) { return '<span class="sw-dot" style="background:' + esc(h) + '"></span>'; }).join('') + esc(L.l3) + '</div>' : '') +
+    (p.remark ? '<div class="pdet-2">' + esc(p.remark) + '</div>' : '') + '</div>';
+}
+
+/* ================= colour science ================= */
+function hexToRgb(h) { h = String(h).replace('#', ''); return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]; }
+function rgbToHex(r, g, b) { return '#' + [r, g, b].map(function (x) { return Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, '0'); }).join('').toUpperCase(); }
+function rgbToLab(r, g, b) {
+  var f = function (c) { c /= 255; return c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92; };
+  var R = f(r), G = f(g), B = f(b);
+  var x = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047, y = R * 0.2126 + G * 0.7152 + B * 0.0722, z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883;
+  var t = function (v) { return v > 0.008856 ? Math.cbrt(v) : 7.787 * v + 16 / 116; };
+  var fx = t(x), fy = t(y), fz = t(z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+function labToRgb(L, a, bb) {
+  var fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - bb / 200;
+  var inv = function (v) { var c = v * v * v; return c > 0.008856 ? c : (v - 16 / 116) / 7.787; };
+  var x = inv(fx) * 0.95047, y = inv(fy), z = inv(fz) * 1.08883;
+  var R = x * 3.2406 + y * -1.5372 + z * -0.4986, G = x * -0.9689 + y * 1.8758 + z * 0.0415, B = x * 0.0557 + y * -0.2040 + z * 1.0570;
+  var g = function (c) { c = c > 0.0031308 ? 1.055 * Math.pow(c, 1 / 2.4) - 0.055 : 12.92 * c; return c * 255; };
+  return [g(R), g(G), g(B)];
+}
+function dE(l1, l2) { return Math.sqrt(Math.pow(l1[0] - l2[0], 2) + Math.pow(l1[1] - l2[1], 2) + Math.pow(l1[2] - l2[2], 2)); }
+function hexLab(h) { var c = hexToRgb(h); return rgbToLab(c[0], c[1], c[2]); }
+// Common flower colour names, used to suggest a name for a colour that is not in the master yet.
+var COLOUR_DICT = { 'White': '#FFFFFF', 'Ivory': '#FFFFF0', 'Cream': '#F3E9C6', 'Lemon': '#FFF44F', 'Yellow': '#F2C94C', 'Golden': '#D9A400',
+  'Mustard': '#C9A227', 'Amber': '#FFBF00', 'Apricot': '#FBCEB1', 'Peach': '#F6B99A', 'Orange': '#F2994A', 'Tangerine': '#F28500',
+  'Coral': '#F88379', 'Salmon': '#FA8072', 'Rust': '#B7410E', 'Scarlet': '#FF2400', 'Red': '#D64545', 'Crimson': '#DC143C',
+  'Maroon': '#7A1F2B', 'Burgundy': '#800020', 'Wine': '#722F37', 'Rose': '#E7546E', 'Hot pink': '#FF69B4', 'Pink': '#E58BA8',
+  'Light pink': '#F5C6D6', 'Blush': '#F3D1D6', 'Fuchsia': '#D2329B', 'Magenta': '#C2185B', 'Plum': '#8E4585', 'Mauve': '#B784A7',
+  'Lilac': '#C8A2C8', 'Lavender': '#B39DDB', 'Violet': '#8F00FF', 'Purple': '#7E57C2', 'Indigo': '#4B0082', 'Blue': '#4F7BD9',
+  'Sky blue': '#87CEEB', 'Lime': '#BFD641', 'Green': '#6BAA75', 'Brown': '#8B5A2B', 'Black': '#1E1E1E' };
+function masterHexes() {
+  var out = [];
+  colourNames().concat(hiddenOf('Colours')).forEach(function (c) { var h = swatchOf(c); if (/^#[0-9a-f]{6}$/i.test(h)) out.push([c, h]); });
+  return out;
+}
+/** Nearest master colour, or a suggested new name when nothing in the master is close. */
+function nameColour(hex) {
+  var lab = hexLab(hex), best = null, bd = 1e9;
+  masterHexes().forEach(function (m) { var d = dE(lab, hexLab(m[1])); if (d < bd) { bd = d; best = m[0]; } });
+  if (best && bd <= 16) return { name: best, hex: hex, isNew: false };
+  var sug = null, sd = 1e9;
+  Object.keys(COLOUR_DICT).forEach(function (n) { var d = dE(lab, hexLab(COLOUR_DICT[n])); if (d < sd) { sd = d; sug = n; } });
+  var inMaster = ((S.boot.lists && S.boot.lists['Colours']) || []).some(function (c) { return c.toLowerCase() === sug.toLowerCase(); });
+  if (inMaster) return { name: sug, hex: hex, isNew: false };
+  return { name: sug, hex: hex, isNew: true };
+}
+function rgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  var mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, h = 0;
+  if (d) h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [(h * 60 + 360) % 360, mx ? d / mx : 0, mx];
+}
+/** Main flower colours from the middle of the photo (leaves, soil and shadows left out). */
+function dominantColours(ctx, w, h) {
+  var x0 = Math.floor(w * 0.15), y0 = Math.floor(h * 0.15), ww = Math.ceil(w * 0.7), hh = Math.ceil(h * 0.7);
+  var data = ctx.getImageData(x0, y0, ww, hh).data, step = Math.max(1, Math.floor(Math.sqrt(ww * hh / 4000))), pts = [];
+  for (var y = 0; y < hh; y += step) for (var x = 0; x < ww; x += step) {
+    var i = (y * ww + x) * 4, r = data[i], g = data[i + 1], b = data[i + 2], hsv = rgbToHsv(r, g, b);
+    if (hsv[2] < 0.2) continue;                                       // shadow
+    if (hsv[0] >= 60 && hsv[0] <= 170 && hsv[1] > 0.18) continue;     // leaves
+    if (hsv[0] >= 15 && hsv[0] <= 45 && hsv[1] > 0.2 && hsv[2] < 0.45) continue; // soil
+    pts.push(rgbToLab(r, g, b));
+  }
+  if (pts.length < 40) return [];
+  var k = 4, cs = [];
+  for (var c = 0; c < k; c++) cs.push(pts[Math.floor((c + 0.5) * pts.length / k)].slice());
+  var asg = new Array(pts.length);
+  for (var it = 0; it < 8; it++) {
+    pts.forEach(function (p, n) { var bi = 0, bd = 1e9; cs.forEach(function (q, j) { var d = dE(p, q); if (d < bd) { bd = d; bi = j; } }); asg[n] = bi; });
+    cs = cs.map(function (q, j) {
+      var sum = [0, 0, 0], cnt = 0;
+      pts.forEach(function (p, n) { if (asg[n] === j) { sum[0] += p[0]; sum[1] += p[1]; sum[2] += p[2]; cnt++; } });
+      return cnt ? [sum[0] / cnt, sum[1] / cnt, sum[2] / cnt, cnt] : q;
+    });
+  }
+  return cs.filter(function (q) { return (q[3] || 0) / pts.length >= 0.12; }).sort(function (a, b) { return b[3] - a[3]; }).slice(0, 2)
+    .map(function (q) { var rgb = labToRgb(q[0], q[1], q[2]); return rgbToHex(rgb[0], rgb[1], rgb[2]); });
+}
+
+/* ================= colour tool: tap the photo to pick colours ================= */
+var ROLES = [['main', 'Petal'], ['edge', 'Edge / tip'], ['centre', 'Centre']];
+function mountColourTool(box, file, onChange) {
+  var picked = [], role = 'main', ctx, cw, ch;
+  box.innerHTML = '<div class="ctool"><div class="ct-top"><span class="lbl">Colours from the photo</span>' +
+    '<div class="chips" role="group" aria-label="What are you tapping?">' + ROLES.map(function (r) {
+      return '<button type="button" class="chip" data-role="' + r[0] + '" aria-pressed="' + (r[0] === role) + '">' + r[1] + '</button>';
+    }).join('') + '</div></div>' +
+    '<div class="ct-wrap"><canvas class="ct-canvas" aria-label="Photo. Tap the flower to pick a colour."></canvas></div>' +
+    '<p class="hint">Choose Petal, Edge or Centre, then tap that part of the flower. The main colours are already suggested.</p>' +
+    '<div class="ct-picked" aria-live="polite"></div></div>';
+  var canvas = $('.ct-canvas', box);
+  function info() {
+    var o = { main: [], edge: [], centre: [] };
+    picked.forEach(function (p) { o[p.role].push(p); });
+    return o;
+  }
+  function draw() {
+    $('.ct-picked', box).innerHTML = picked.map(function (p, i) {
+      var r = ROLES.filter(function (x) { return x[0] === p.role; })[0][1];
+      return '<span class="ct-chip"><span class="sw-dot" style="background:' + p.hex + '"></span><span><strong>' + esc(p.name) + '</strong> ' +
+        '<span class="muted sm">' + esc(r) + ' · ' + p.hex + (p.auto ? ' · suggested' : '') + '</span></span>' +
+        (p.isNew ? '<button type="button" class="btn sm" data-addc="' + i + '">Add "' + esc(p.name) + '" to master</button>' : '') +
+        '<button type="button" class="icon-btn" data-rmc="' + i + '" aria-label="Remove ' + esc(p.name) + '">' + icon('close', 16) + '</button></span>';
+    }).join('') || '<span class="muted sm">No colours yet.</span>';
+    if (onChange) onChange(info());
+  }
+  function add(hex, auto) {
+    var n = nameColour(hex);
+    if (picked.some(function (p) { return p.role === role && p.name === n.name; })) return;
+    picked.push({ role: auto ? 'main' : role, name: n.name, hex: hex, isNew: n.isNew, auto: !!auto });
+    draw();
+  }
+  box.addEventListener('click', function (e) {
+    var r = e.target.closest('[data-role]');
+    if (r) { role = r.dataset.role; $$('[data-role]', box).forEach(function (b) { b.setAttribute('aria-pressed', String(b === r)); }); return; }
+    var rm = e.target.closest('[data-rmc]');
+    if (rm) { picked.splice(+rm.dataset.rmc, 1); draw(); return; }
+    var ad = e.target.closest('[data-addc]');
+    if (ad) {
+      var p = picked[+ad.dataset.addc]; ad.disabled = true;
+      api('addColour', S.pin, p.name, p.hex).then(function () {
+        S.boot.lists['Colours'] = (S.boot.lists['Colours'] || []).concat([p.name]);
+        S.boot.meta.swatches = S.boot.meta.swatches || {}; S.boot.meta.swatches[p.name] = p.hex; saveBoot(S.boot);
+        picked.forEach(function (q) { if (q.name === p.name) q.isNew = false; });
+        toast(p.name + ' added to the colour master with code ' + p.hex + '.'); draw();
+      }).catch(function (err) { ad.disabled = false; toast(err.message, 'err'); });
+    }
+  });
+  canvas.addEventListener('click', function (e) {
+    if (!ctx) return;
+    var rect = canvas.getBoundingClientRect(), x = Math.round((e.clientX - rect.left) * cw / (rect.width || cw)), y = Math.round((e.clientY - rect.top) * ch / (rect.height || ch));
+    var sz = 7, x0 = Math.max(0, Math.min(cw - sz, x - 3)), y0 = Math.max(0, Math.min(ch - sz, y - 3));
+    var d = ctx.getImageData(x0, y0, sz, sz).data, r = 0, g = 0, b = 0, n = d.length / 4;
+    for (var i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
+    add(rgbToHex(r / n, g / n, b / n), false);
+  });
+  var url = URL.createObjectURL(file), img = new Image();
+  img.onload = function () {
+    var s2 = Math.min(1, 900 / Math.max(img.naturalWidth, img.naturalHeight));
+    cw = canvas.width = Math.max(1, Math.round(img.naturalWidth * s2)); ch = canvas.height = Math.max(1, Math.round(img.naturalHeight * s2));
+    ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(img, 0, 0, cw, ch);
+    URL.revokeObjectURL(url);
+    try { dominantColours(ctx, cw, ch).forEach(function (h) { add(h, true); }); } catch (e) { /* picking still works */ }
+  };
+  img.onerror = function () { box.innerHTML = '<p class="hint">This photo cannot be shown for colour picking. Use the colour buttons instead.</p>'; };
+  img.src = url;
+  draw();
+  return {
+    get: info,
+    setNames: function (names) { /* spoken colours become main colours when nothing was picked */
+      names.forEach(function (nm) { if (!picked.some(function (p) { return p.name === nm; })) picked.push({ role: 'main', name: nm, hex: hexOf(nm), isNew: false, spoken: true }); });
+      draw();
+    }
+  };
+}
+
+/* ================= voice: speech to fields ================= */
+var NUMW = { zero: 0, oh: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19 };
+var TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+var ORD = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7 };
+var LETTERS = { a: 'a|ay|eh', b: 'b|bee|be|bi', c: 'c|see|sea|si', d: 'd|dee|di', e: 'e|ee', f: 'f|ef|eff', g: 'g|gee|ji|jee', h: 'h|aitch|etch',
+  i: 'i|eye', j: 'j|jay', k: 'k|kay|ke', l: 'l|el|ell', m: 'm|em', n: 'n|en', o: 'o|oh', p: 'p|pee|pe|pi', q: 'q|queue|cue', r: 'r|are|ar',
+  s: 's|ess|es', t: 't|tee|tea|ti', u: 'u|you', v: 'v|vee|we', w: 'w|double u', x: 'x|ex', y: 'y|why', z: 'z|zed|zee' };
+function normText(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+function numberWords(t) {
+  var tk = t.split(' '), out = [];
+  for (var i = 0; i < tk.length; i++) {
+    var w = tk[i];
+    if (TENS[w] !== undefined) { var n = TENS[w]; if (NUMW[tk[i + 1]] !== undefined && NUMW[tk[i + 1]] < 10 && tk[i + 1] !== 'oh') { n += NUMW[tk[i + 1]]; i++; } out.push(String(n)); }
+    else if (NUMW[w] !== undefined && (w !== 'oh' || /^\d$/.test(out[out.length - 1] || '') || NUMW[tk[i + 1]] !== undefined)) out.push(String(NUMW[w]));
+    else out.push(w);
+  }
+  // "zero three six" -> "036"
+  var joined = [];
+  out.forEach(function (w) { if (/^\d$/.test(w) && /^\d+$/.test(joined[joined.length - 1] || '') && joined[joined.length - 1].length < 4 && joined._lastSingle) joined[joined.length - 1] += w; else joined.push(w); joined._lastSingle = /^\d$/.test(w); });
+  return joined.join(' ');
+}
+function lev(a, b) {
+  if (a === b) return 0;
+  var m = a.length, n = b.length, d = [], i, j;
+  for (i = 0; i <= m; i++) d[i] = [i];
+  for (j = 0; j <= n; j++) d[0][j] = j;
+  for (i = 1; i <= m; i++) for (j = 1; j <= n; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[m][n];
+}
+function close(a, b) { if (a === b) return true; if (Math.min(a.length, b.length) < 5) return false; return lev(a, b) <= (Math.max(a.length, b.length) >= 8 ? 2 : 1); }
+/** Find the best phrase match in text. cands: [{phrase, value}] */
+function findPhrase(words, cands) {
+  var best = null;
+  cands.forEach(function (c) {
+    var pw = c.phrase.split(' '), L = pw.length;
+    for (var i = 0; i + L <= words.length; i++) {
+      var ok = true;
+      for (var j = 0; j < L; j++) if (!close(words[i + j], pw[j])) { ok = false; break; }
+      if (ok && (!best || c.phrase.length > best.phrase.length)) best = { phrase: c.phrase, value: c.value, at: i, len: L };
+    }
+  });
+  return best;
+}
+function plantPhrases() {
+  var out = [], al = (S.boot.aliases && S.boot.aliases.plant) || {};
+  S.boot.plants.forEach(function (p) {
+    [p.en, p.bot ? p.bot.split(' ')[0] : ''].concat(['ta', 'te', 'ml', 'kn', 'hi'].map(function (k) { var m = String(p[k] || '').match(/\(([^)]+)\)/); return m ? m[1] : ''; }))
+      .forEach(function (x) { var n = normText(String(x).replace(/\(.*?\)/g, '')); if (n.length > 2) out.push({ phrase: n, value: p.id }); });
+  });
+  Object.keys(al).forEach(function (h) { out.push({ phrase: normText(h), value: al[h] }); });
+  return out;
+}
+function varietyPhrases(plantId) {
+  var out = [], al = (S.boot.aliases && S.boot.aliases.variety) || {};
+  S.boot.varieties.forEach(function (v) {
+    if (plantId && v.plantId !== plantId) return;
+    [v.name, v.trade].forEach(function (x) { var n = normText(x); if (n.length > 2) out.push({ phrase: n, value: v.id }); });
+  });
+  Object.keys(al).forEach(function (h) { var v = S.vm[al[h]]; if (v && (!plantId || v.plantId === plantId)) out.push({ phrase: normText(h), value: v.id }); });
+  return out;
+}
+function parseSpeech(text) {
+  var t = numberWords(normText(text)), words = t.split(' ').filter(Boolean), r = { colours: [], edge: [], centre: [], score: 0 };
+  // pot
+  if (/\b(empty|no pot|not numbered|no number|ground)\b/.test(t)) r.noPot = true;
+  else (S.boot.potCodes || []).some(function (c) {
+    var pat = String(c.code).toLowerCase().split('').map(function (l) { return '(?:' + (LETTERS[l] || l) + ')'; }).join('\\s*');
+    var m = t.match(new RegExp('(?:^|\\s)(?:pot\\s+|part\\s+|port\\s+|number\\s+)?' + pat + '\\s*(\\d{1,4})(?=\\s|$)'));
+    if (m) { r.potRef = c.code + String(+m[1]).padStart(+c.digits || 3, '0'); r.pot = findPot(r.potRef); return true; }
+    return false;
+  });
+  // stage
+  var stages = ((S.boot.lists && S.boot.lists['Photo stages']) || FLOWER_STAGES);
+  var dm = t.match(/\bday\s*(\d{1,2})\b/) || (function () { var o = t.match(/\b(first|second|third|fourth|fifth|sixth|seventh) day\b/); return o ? [o[0], String(ORD[o[1]])] : null; })();
+  var stageMap = [[/\bbud open(ing)?\b|\bopening bud\b/, 'Bud opening'], [/\bbud\b/, 'Bud'], [/\bfull(y)? (bloom|open|flower)\b/, 'Full bloom'],
+    [/\bfad(ing|ed)\b/, 'Fading'], [/\bseed pod\b/, 'Seed pod'], [/\bseeds?\b/, 'Seeds'], [/\bdr(ied|y)\b/, 'Dried'], [/\bnew lea(f|ves)\b/, 'New leaf'],
+    [/\bnew shoot\b/, 'New shoot'], [/\bfruit set\b/, 'Fruit set'], [/\bripe\b/, 'Ripe fruit'], [/\bwhole plant\b/, 'Whole plant'], [/\b(pest|disease)\b/, 'Pest or disease']];
+  if (dm) r.stage = 'Day ' + (+dm[1]);
+  else stageMap.some(function (sm) { if (sm[0].test(t)) { r.stage = sm[1]; return true; } return false; });
+  if (r.stage && stages.indexOf(r.stage) < 0 && !/^Day \d+$/.test(r.stage)) r.stage = '';
+  r.archive = /\b(old photo|archive|old picture)\b/.test(t);
+  // plant and variety
+  var pm = findPhrase(words, plantPhrases());
+  if (pm) r.plantId = pm.value;
+  var vm = findPhrase(words, varietyPhrases(r.plantId));
+  if (vm) { r.varietyId = vm.value; if (!r.plantId && S.vm[vm.value]) r.plantId = S.vm[vm.value].plantId; }
+  if (r.pot && !r.plantId) { r.plantId = r.pot.plantId; r.varietyId = r.varietyId || r.pot.varietyId; }
+  // colours: "white edge", "yellow centre"
+  var cAl = (S.boot.aliases && S.boot.aliases.colour) || {};
+  var cands = ((S.boot.lists && S.boot.lists['Colours']) || []).map(function (c) { return { phrase: normText(c), value: c }; })
+    .concat(Object.keys(cAl).map(function (h) { return { phrase: normText(h), value: cAl[h] }; }))
+    .sort(function (a, b) { return b.phrase.length - a.phrase.length; });
+  var used = {};
+  cands.forEach(function (c) {
+    var pw = c.phrase.split(' ');
+    for (var i = 0; i + pw.length <= words.length; i++) {
+      if (used[i]) continue;
+      if (pw.every(function (w, j) { return words[i + j] === w; })) {
+        for (var j = 0; j < pw.length; j++) used[i + j] = 1;
+        var after = words.slice(i + pw.length, i + pw.length + 2).join(' '), before = words.slice(Math.max(0, i - 2), i).join(' ');
+        var list = /\b(edge|edges|edged|border|tip|tips|tipped|rim)\b/.test(after) || /\b(edged|tipped)\b/.test(before) ? r.edge
+          : /\b(centre|center|eye|throat|middle|heart)\b/.test(after) ? r.centre : r.colours;
+        if (list.indexOf(c.value) < 0) list.push(c.value);
+      }
+    }
+  });
+  r.score = (r.plantId ? 3 : 0) + (r.varietyId ? 3 : 0) + (r.pot || r.noPot ? 2 : 0) + (r.stage ? 1 : 0) + (r.colours.length + r.edge.length + r.centre.length) * 0.5;
+  return r;
+}
+function startListening(onText, onDone) {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  var rec = new SR();
+  rec.lang = 'en-IN'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 3;
+  rec.onresult = function (e) {
+    var res = e.results[e.results.length - 1], alts = [];
+    for (var a = 0; a < res.length; a++) alts.push(res[a].transcript);
+    var full = '';
+    for (var i = 0; i < e.results.length; i++) full += e.results[i][0].transcript + ' ';
+    onText(full.trim(), res.isFinal, alts);
+  };
+  rec.onerror = function (e) { onDone(e.error || 'error'); };
+  rec.onend = function () { onDone(); };
+  try { rec.start(); } catch (e) { return null; }
+  return rec;
+}
+
+/* ================= offline queue (on the phone) ================= */
+var Q = {
+  db: function () {
+    return new Promise(function (res, rej) {
+      if (!window.indexedDB) { rej(new Error('no storage')); return; }
+      var r = indexedDB.open('g109a', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('queue', { keyPath: 'qid' }); };
+      r.onsuccess = function () { res(r.result); }; r.onerror = function () { rej(r.error); };
+    });
+  },
+  run: function (mode, fn) { return Q.db().then(function (db) { return new Promise(function (res, rej) { var tx = db.transaction('queue', mode), st = tx.objectStore('queue'), out = fn(st); tx.oncomplete = function () { res(out && out.result !== undefined ? out.result : out); }; tx.onerror = function () { rej(tx.error); }; }); }); },
+  add: function (item) { return Q.run('readwrite', function (st) { st.put(item); }); },
+  all: function () { return Q.run('readonly', function (st) { return st.getAll(); }); },
+  del: function (qid) { return Q.run('readwrite', function (st) { st.delete(qid); }); }
+};
+var syncing = false, upErr = '';
+/** One queued capture: make the clean + labelled copies (if not done) and upload. */
+function processItem(it) {
+  var prep = it.b64 ? Promise.resolve({ clean: it.b64, labelled: it.meta.labelB64 || null })
+    : prepareImages(new Blob([it.raw], { type: it.rawType || 'image/jpeg' }), Object.assign({ shotBy: it.meta.who, gps: it.gps }, it.meta));
+  return prep.then(function (imgs) {
+    var meta = Object.assign({}, it.meta, { labelB64: imgs.labelled || '' });
+    return api('saveCapture', S.pin, meta, imgs.clean);
+  }).then(function (res) {
+    if (!res.filed) S.boot.captureCount = (S.boot.captureCount || 0) + 1; // a duplicate means the first answer was lost, so it was not counted yet
+    if (res.filed) S.calCache = {};
+    return res;
+  });
+}
+function flushQueue(silent) {
+  if (syncing || !isOwner()) return Promise.resolve(0);
+  if (!navigator.onLine) { updateWaiting(); return Promise.resolve(0); }
+  syncing = true; upErr = '';
+  var done = 0, filed = 0, tried = {};
+  function next() {
+    return Q.all().then(function (items) {
+      items = items || [];
+      var it = items.filter(function (x) { return !tried[x.qid]; })[0];
+      if (!it) return null;
+      tried[it.qid] = 1;
+      updateWaiting(items.length);
+      return processItem(it).then(function (res) {
+        done++; if (res.filed) filed++;
+        return Q.del(it.qid);
+      }, function (err) {
+        if (/reach|internet/i.test(err.message)) throw err;      // offline: stop, try again later
+        upErr = err.message; it.err = err.message; return Q.add(it); // keep it, show the problem
+      }).then(next);
+    });
+  }
+  return next().catch(function () {}).then(function () {
+    syncing = false;
+    if (done) { renderChrome(); if (!silent || done > 1) toast(done === 1 ? (filed ? 'Photo uploaded and filed.' : 'Photo uploaded to Review.') : done + ' photos uploaded' + (filed ? ' (' + filed + ' filed)' : '') + '.'); }
+    updateWaiting();
+    return done;
+  });
+}
+function updateWaiting(nNow) {
+  var el = $('#qWait'); if (!el) return;
+  Q.all().then(function (items) {
+    var n = nNow || (items || []).length;
+    if (!n) { el.hidden = true; return; }
+    el.hidden = false;
+    el.textContent = !navigator.onLine ? (n === 1 ? '1 photo is saved on this phone. It will upload' : n + ' photos are saved on this phone. They will upload') + ' when you are online.'
+      : syncing ? 'Uploading ' + n + (n === 1 ? ' photo' : ' photos') + '… you can keep taking photos.'
+      : upErr ? n + ' waiting. Last try failed: ' + upErr + ' It will try again.' : n + ' waiting to upload.';
+  }).catch(function () { el.hidden = true; });
+}
+window.addEventListener('online', function () { flushQueue(false); });
+
+/* ================= owner: quick capture ================= */
+function whoAmI() { try { return localStorage.getItem('g109a_who') || ''; } catch (e) { return ''; } }
+function viewCapture() {
+  var stages = ((S.boot.lists && S.boot.lists['Photo stages']) || FLOWER_STAGES).filter(function (x) { return hiddenOf('Photo stages').indexOf(x) < 0; });
+  var hasMic = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  var auto = false; try { auto = localStorage.getItem('g109a_autofile') === '1'; } catch (e) {}
+  app.innerHTML = '<div class="page-h"><h1>Quick capture</h1><p class="muted">Take a photo, tap the flower for colours, and say the plant, variety, pot and stage. Check it later in Review.</p></div>' +
+    '<p class="note" id="qWait" hidden></p>' +
+    '<form id="cForm" class="form" novalidate>' +
+      (whoAmI() ? '' : '<div class="field"><label for="cWho">Who is using this phone?</label><input id="cWho" autocomplete="name" placeholder="Your name"><p class="hint">Asked once. Each capture records who took it.</p></div>') +
+      '<div class="pick"><label class="pick-btn"><input type="file" accept="image/*" capture="environment" id="cCam">' + icon('camera', 28) + '<span>Take photo</span></label>' +
+      '<label class="pick-btn"><input type="file" accept="image/*" id="cGal">' + icon('image', 28) + '<span>Choose a photo</span></label></div>' +
+      '<div id="cTool"></div>' +
+      '<fieldset class="fs"><legend>Say it</legend>' +
+        '<div class="row gap"><button type="button" class="btn btn-primary lg mic" id="cMic"' + (hasMic ? '' : ' hidden') + '>' + icon('mic', 22) + '<span>Tap and speak</span></button>' +
+        '<span class="muted sm" id="cMicMsg">' + (hasMic ? 'Example: "Tuberose, Cherry, pot T 36, day two, pink with white edge". Say "empty" if the pot has no number.' : 'Voice is not available in this browser. Use the 🎤 on your keyboard to speak into the box.') + '</span></div>' +
+        '<div class="field"><label for="cHeard">What you said (you can also type)</label><textarea id="cHeard" rows="2"></textarea></div>' +
+        '<div class="chips" id="cChips" aria-live="polite"></div>' +
+      '</fieldset>' +
+      '<fieldset class="fs"><legend>Check the details</legend><div class="f2">' +
+        '<div class="field"><label for="cPot">Pot ref</label><input id="cPot" list="potRefs" autocomplete="off" autocapitalize="characters" placeholder="e.g. T036, or leave empty">' + potDatalist('potRefs') + '<p class="hint" id="cPotMsg"></p></div>' +
+        comboHtml('cPlant', 'Plant', 'Type: lotus, sampangi…') + comboHtml('cVar', 'Variety', 'Type a variety name') +
+        '<div class="field"><label for="cStage">Stage</label><select id="cStage"><option value="">Not set</option>' + stages.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('') + '</select></div></div>' +
+        '<label class="sw"><input type="checkbox" id="cOld"><span>Old photo (archive)</span></label>' +
+        '<label class="sw"><input type="checkbox" id="cAuto"' + (auto ? ' checked' : '') + '><span>File straight away when everything is clear (skip Review)</span></label>' +
+      '</fieldset>' +
+      '<div class="actions"><button class="btn btn-primary lg" type="submit" id="cSave">Save capture</button></div></form>';
+  var file = null, when = null, tool = null, potState = { pot: null, none: false }, rec = null, lastParse = null;
+  var plantC = Combo('cPlant', plantComboOpts(), ''), varC = Combo('cVar', varietyComboOpts('', false), '');
+  plantC.onChange(function () { varC.setOptions(varietyComboOpts(plantC.value, false), ''); if (potState.pot && potState.pot.plantId !== plantC.value) setPot(null, false); });
+  function setPot(p, none, ref) {
+    potState = { pot: p, none: !!none };
+    var m = $('#cPotMsg');
+    if (none) { $('#cPot').value = ''; m.textContent = 'No pot number.'; m.className = 'hint good'; return; }
+    if (p) { $('#cPot').value = p.ref; m.textContent = p.plant + (p.variety ? ', ' + p.variety : ''); m.className = 'hint good'; return; }
+    if (ref) { $('#cPot').value = ref; m.textContent = ref + ' is not an active pot. Add it from Add photo or Pots, or leave empty.'; m.className = 'hint bad'; return; }
+    m.textContent = ''; m.className = 'hint';
+  }
+  $('#cPot').addEventListener('change', function () {
+    var v = $('#cPot').value.trim(); if (!v) { setPot(null, false); return; }
+    var p = findPot(v); setPot(p, false, p ? '' : v.toUpperCase());
+    if (p) { plantC.value = p.plantId; varC.setOptions(varietyComboOpts(p.plantId, false), p.varietyId); }
+  });
+  function applyParse(r) {
+    lastParse = r;
+    if (r.noPot) setPot(null, true);
+    else if (r.pot) setPot(r.pot);
+    else if (r.potRef) setPot(null, false, r.potRef);
+    if (r.plantId) { plantC.value = r.plantId; varC.setOptions(varietyComboOpts(r.plantId, false), r.varietyId || ''); }
+    if (r.stage) $('#cStage').value = r.stage;
+    if (r.archive) $('#cOld').checked = true;
+    var names = r.colours.concat(r.edge.map(function (c) { return c; })).concat(r.centre);
+    if (tool && r.colours.length && !tool.get().main.some(function (p) { return !p.auto; })) tool.setNames(r.colours);
+    var chips = [];
+    if (r.plantId) chips.push(plantName(r.plantId)); if (r.varietyId) chips.push(varLabel(S.vm[r.varietyId]));
+    if (r.noPot) chips.push('No pot'); else if (r.potRef) chips.push(r.potRef + (r.pot ? '' : ' (not found)'));
+    if (r.stage) chips.push(r.stage); if (r.archive) chips.push('Old photo');
+    r.colours.forEach(function (c) { chips.push(c); }); r.edge.forEach(function (c) { chips.push(c + ' edge'); }); r.centre.forEach(function (c) { chips.push(c + ' centre'); });
+    $('#cChips').innerHTML = chips.length ? chips.map(function (c) { return '<span class="badge b-leaf">' + esc(c) + '</span>'; }).join('') : '<span class="muted sm">Nothing matched yet. Speak again, or fill below.</span>';
+    return names;
+  }
+  $('#cHeard').addEventListener('change', function () { applyParse(parseSpeech($('#cHeard').value)); });
+  $('#cMic').addEventListener('click', function () {
+    if (rec) { rec.stop(); return; }
+    var btn = $('#cMic'); $('span', btn).textContent = 'Listening… tap to stop'; btn.classList.add('on');
+    rec = startListening(function (txt, fin, alts) {
+      $('#cHeard').value = txt;
+      if (fin) {
+        var best = (alts && alts.length ? alts : [txt]).map(parseSpeech).sort(function (a, b) { return b.score - a.score; })[0];
+        applyParse(best);
+      }
+    }, function (err) {
+      rec = null; $('span', btn).textContent = 'Tap and speak'; btn.classList.remove('on');
+      if (err && err !== 'no-speech' && err !== 'aborted') $('#cMicMsg').textContent = err === 'not-allowed' ? 'Please allow the microphone for this app, then try again.' : 'Voice did not work (' + err + '). Use the 🎤 on your keyboard instead.';
+    });
+    if (!rec) { $('span', btn).textContent = 'Tap and speak'; btn.classList.remove('on'); $('#cMicMsg').textContent = 'Voice could not start. Use the 🎤 on your keyboard instead.'; }
+  });
+  function onPhoto(f, source) {
+    if (!f) return;
+    file = f; file._source = source;
+    readExif(f).then(function (ex) { when = (ex && ex.date ? ex : null) || (source === 'camera' ? { date: today(), time: nowTime() } : fromTs(f.lastModified)) || { date: today(), time: nowTime() }; if (ex && ex.gps) when.gps = ex.gps; });
+    tool = mountColourTool($('#cTool'), f, null);
+  }
+  $('#cCam').addEventListener('change', function (e) { onPhoto(e.target.files[0], 'camera'); e.target.value = ''; });
+  $('#cGal').addEventListener('change', function (e) { onPhoto(e.target.files[0], 'gallery'); e.target.value = ''; });
+  $('#cForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var whoIn = $('#cWho');
+    if (whoIn) { if (!whoIn.value.trim()) { toast('Please type your name once.', 'err'); whoIn.focus(); return; } try { localStorage.setItem('g109a_who', whoIn.value.trim()); } catch (er) {} }
+    if (!file) { toast('Take or choose a photo first.', 'err'); return; }
+    var autoOn = $('#cAuto').checked; try { localStorage.setItem('g109a_autofile', autoOn ? '1' : '0'); } catch (er) {}
+    var ci = tool ? tool.get() : { main: [], edge: [], centre: [] };
+    var spokenEdge = lastParse ? lastParse.edge : [], spokenCentre = lastParse ? lastParse.centre : [];
+    var uniq = function (a) { return a.filter(function (x, i) { return x && a.indexOf(x) === i; }); };
+    var clear = !!plantC.value && !!$('#cStage').value && (potState.none || !!potState.pot);
+    var meta = {
+      date: (when || {}).date || today(), time: (when || {}).time || nowTime(), who: whoAmI(), heard: $('#cHeard').value.trim(),
+      plantId: plantC.value, varietyId: varC.value, potUid: potState.pot ? potState.pot.uid : '', potNo: potState.pot ? potState.pot.ref : '',
+      stage: $('#cStage').value, archive: $('#cOld').checked,
+      colour: uniq(ci.main.map(function (p) { return p.name; })), colourCodes: uniq(ci.main.map(function (p) { return p.hex; })),
+      edge: uniq(ci.edge.map(function (p) { return p.name; }).concat(spokenEdge)), centre: uniq(ci.centre.map(function (p) { return p.name; }).concat(spokenCentre)),
+      autoFile: autoOn && clear
+    };
+    var btn = $('#cSave'); btn.disabled = true; btn.textContent = 'Saving…';
+    var gps0 = (when || {}).gps;
+    if (window.indexedDB) {
+      var savedFile = file;
+      readBytes(savedFile).then(function (buf) {
+        var qid = 'q' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        meta.qid = qid;
+        return Q.add({ qid: qid, v: 2, meta: meta, raw: buf, rawType: savedFile.type || 'image/jpeg', gps: gps0 });
+      }).then(function () {
+        file = null; tool = null; lastParse = null; $('#cTool').innerHTML = ''; $('#cHeard').value = ''; $('#cChips').innerHTML = '';
+        $('#cStage').value = ''; $('#cOld').checked = false; setPot(null, false); plantC.value = ''; varC.setOptions(varietyComboOpts('', false), '');
+        var w2 = $('#cWho'); if (w2) w2.closest('.field').remove();
+        toast(navigator.onLine ? 'Saved. Uploading in the background. Take the next one!' : 'Saved on this phone. It will upload when you are online.');
+        updateWaiting(); flushQueue(true);
+      }).catch(function (err) { toast('Could not keep the photo on this phone: ' + err.message, 'err'); })
+        .then(function () { btn.disabled = false; btn.textContent = 'Save capture'; });
+      return;
+    }
+    var reset = function (msg) {
+      delete meta.labelB64;
+      toast(msg); file = null; tool = null; lastParse = null; $('#cTool').innerHTML = ''; $('#cHeard').value = ''; $('#cChips').innerHTML = '';
+      $('#cStage').value = ''; $('#cOld').checked = false; setPot(null, false); plantC.value = ''; varC.setOptions(varietyComboOpts('', false), '');
+      var w2 = $('#cWho'); if (w2) w2.closest('.field').remove();
+    };
+    var queue = function (b64) {
+      return Q.add({ qid: 'q' + Date.now(), meta: meta, b64: b64 }).then(function () { updateWaiting(); reset('No internet: saved on this phone. It will upload by itself later.'); });
+    };
+    var pot0 = potState.pot;
+    prepareImages(file, { plantId: meta.plantId, varietyId: meta.varietyId, potNo: meta.potNo, stage: meta.stage, date: meta.date, time: meta.time,
+      colour: meta.colour, colourCodes: meta.colourCodes, edge: meta.edge, centre: meta.centre, shotBy: meta.who, gps: (when || {}).gps }).then(function (imgs) {
+      meta.labelB64 = imgs.labelled;
+      var b64 = imgs.clean;
+      if (!navigator.onLine && window.indexedDB) return queue(b64);
+      return api('saveCapture', S.pin, meta, b64).then(function (res) {
+        if (res.filed) reset('Saved and filed' + (res.filed.counted ? ' (Day 1 counted)' : '') + '. Next one!');
+        else { S.boot.captureCount = (S.boot.captureCount || 0) + 1; renderChrome(); reset('Saved to Review. Next one!'); }
+      }, function (err) {
+        if (window.indexedDB && /reach|internet/i.test(err.message)) return queue(b64);
+        throw err;
+      });
+    }).catch(function (err) { toast(err.message, 'err'); }).then(function () { btn.disabled = false; btn.textContent = 'Save capture'; });
+  });
+  updateWaiting();
+}
+
+/* ================= owner: review captures ================= */
+function viewReview() {
+  app.innerHTML = '<div class="page-h"><h1>Review</h1><p class="muted">Captures waiting to be filed. Check each one, fix anything, then tap File it.</p></div>' +
+    '<div class="row gap" style="margin-bottom:12px"><button type="button" class="btn" id="rvAll">File all that have a plant</button><span class="muted sm" id="rvCount"></span></div>' +
+    '<div id="rvList"><p class="muted">Loading…</p></div>';
+  var stages = ((S.boot.lists && S.boot.lists['Photo stages']) || FLOWER_STAGES);
+  var combos = {};
+  function card(c) {
+    var pot = c.potUid ? (S.boot.pots || []).filter(function (p) { return p.uid === c.potUid; })[0] : null;
+    var cols = splitColours(c.colour).map(function (n, i) { var codes = splitColours(c.colourCodes); return '<span class="ct-chip"><span class="sw-dot" style="background:' + (codes[i] || hexOf(n)) + '"></span>' + esc(n) + '</span>'; })
+      .concat(splitColours(c.edge).map(function (n) { return '<span class="ct-chip"><span class="sw-dot" style="background:' + hexOf(n) + '"></span>' + esc(n) + ' edge</span>'; }))
+      .concat(splitColours(c.centre).map(function (n) { return '<span class="ct-chip"><span class="sw-dot" style="background:' + hexOf(n) + '"></span>' + esc(n) + ' centre</span>'; })).join('');
+    return '<article class="card rv" data-id="' + esc(c.id) + '"><div class="rv-img"><img src="' + imgUrl(c.fileId, 600) + '" alt="Captured photo" loading="lazy"></div><div class="rv-body">' +
+      '<p class="muted sm">' + esc([c.id, fmtDate(c.date), c.time, c.who ? 'by ' + c.who : ''].filter(Boolean).join(' · ')) + '</p>' +
+      (c.heard ? '<p class="rv-heard">“' + esc(c.heard) + '”</p>' : '') +
+      '<div class="f2">' +
+        '<div class="field"><label for="rvPot_' + c.id + '">Pot ref</label><input id="rvPot_' + c.id + '" list="potRefs" autocomplete="off" autocapitalize="characters" value="' + esc(pot ? pot.ref : (c.potNo || '')) + '" placeholder="Empty = no pot"></div>' +
+        comboHtml('rvP_' + c.id, 'Plant') + comboHtml('rvV_' + c.id, 'Variety') +
+        '<div class="field"><label for="rvS_' + c.id + '">Stage</label><select id="rvS_' + c.id + '"><option value="">Not set</option>' + stages.map(function (x) { return '<option' + (x === c.stage ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></div></div>' +
+      (cols ? '<div class="chips">' + cols + '</div>' : '') +
+      '<label class="sw"><input type="checkbox" id="rvO_' + c.id + '"' + (c.archive ? ' checked' : '') + '><span>Old photo (archive)</span></label>' +
+      '<details class="rv-teach"><summary>Teach the app a word</summary><div class="f2"><div class="field"><label for="rvW_' + c.id + '">When I say</label><input id="rvW_' + c.id + '" placeholder="e.g. some bungee"></div>' +
+        '<div class="field"><label for="rvK_' + c.id + '">I mean</label><select id="rvK_' + c.id + '"><option value="plant">the plant chosen above</option><option value="variety">the variety chosen above</option></select></div></div>' +
+        '<button type="button" class="btn sm" data-rv="teach">Remember</button></details>' +
+      '<div class="row gap"><button type="button" class="btn btn-primary" data-rv="file">File it</button><button type="button" class="btn" data-rv="skip">Skip</button><button type="button" class="btn pe-del" data-rv="del">Delete</button></div>' +
+      '</div></article>';
+  }
+  function bind(c) {
+    var pc = Combo('rvP_' + c.id, plantComboOpts(), c.plantId), vc = Combo('rvV_' + c.id, varietyComboOpts(c.plantId, false), c.varietyId);
+    pc.onChange(function () { vc.setOptions(varietyComboOpts(pc.value, false), ''); });
+    combos[c.id] = { p: pc, v: vc, c: c };
+  }
+  function count() { var n = $$('.rv', app).length; $('#rvCount').textContent = n + (n === 1 ? ' waiting' : ' waiting'); S.boot.captureCount = n; renderChrome(); if (!n) $('#rvList').innerHTML = '<div class="empty">All done. Nothing waiting.</div>'; }
+  function fileOne(id) {
+    var cb = combos[id], art = $('.rv[data-id="' + id + '"]'), potV = $('#rvPot_' + id).value.trim(), pot = potV ? findPot(potV) : null;
+    if (potV && !pot) return Promise.reject(new Error(id + ': pot "' + potV + '" is not an active pot.'));
+    if (!cb.p.value) return Promise.reject(new Error(id + ': pick the plant.'));
+    var ch = { plantId: cb.p.value, varietyId: cb.v.value, potUid: pot ? pot.uid : '', potNo: pot ? pot.ref : '', stage: $('#rvS_' + id).value, archive: $('#rvO_' + id).checked };
+    return api('fileCapture', S.pin, id, ch)
+      .then(function (res) {
+        if (art) art.remove();
+        var ph = { date: cb.c.date, time: cb.c.time, plantId: ch.plantId, varietyId: ch.varietyId, stage: ch.stage, colour: cb.c.colour, colourCodes: cb.c.colourCodes,
+          edge: cb.c.edge, centre: cb.c.centre, shotBy: cb.c.who, bloom: res.bloom, fileId: res.fileId, labelId: res.labelId, archive: ch.archive, gallery: true, potNo: ch.potNo };
+        S.boot.photos.unshift(ph);
+        if (res.needsLabel) relabel(ph).catch(function () {});
+        return res;
+      });
+  }
+  app.onclick = function (e) {
+    var b = e.target.closest('[data-rv]'); if (!b) return;
+    var art = b.closest('.rv'), id = art.dataset.id, act = b.dataset.rv;
+    b.disabled = true;
+    var p;
+    if (act === 'file') p = fileOne(id).then(function (res) { toast(id + ' filed' + (res.counted ? ', Day 1 counted' : '') + (res.bloom ? ', flower ' + res.bloom : '') + '.'); count(); });
+    else if (act === 'skip' || act === 'del') {
+      if (act === 'del' && !window.confirm('Delete this capture? The photo goes to Drive trash.')) { b.disabled = false; return; }
+      p = api('skipCapture', S.pin, id, act === 'del').then(function () { art.remove(); toast(id + (act === 'del' ? ' deleted.' : ' skipped.')); count(); });
+    } else if (act === 'teach') {
+      var word = $('#rvW_' + id).value.trim(), kind = $('#rvK_' + id).value, val = kind === 'plant' ? combos[id].p.value : combos[id].v.value;
+      if (!word || !val) { b.disabled = false; toast('Type the word and choose the ' + kind + ' above first.', 'err'); return; }
+      p = api('saveAlias', S.pin, kind, word, val).then(function (al) {
+        S.boot.aliases = al; saveBoot(S.boot); b.disabled = false;
+        toast('Remembered: "' + word + '" = ' + (kind === 'plant' ? plantName(val) : varLabel(S.vm[val])) + '.');
+      });
+    }
+    if (p) p.catch(function (err) { b.disabled = false; toast(err.message, 'err'); });
+  };
+  $('#rvAll').addEventListener('click', function () {
+    var ids = Object.keys(combos).filter(function (id) { return $('.rv[data-id="' + id + '"]') && combos[id].p.value; });
+    if (!ids.length) { toast('No capture has a plant chosen yet.', 'err'); return; }
+    var btn = $('#rvAll'); btn.disabled = true; var ok = 0, errs = [];
+    ids.reduce(function (ch, id) { return ch.then(function () { return fileOne(id).then(function () { ok++; }, function (er) { errs.push(er.message); }); }); }, Promise.resolve())
+      .then(function () { btn.disabled = false; count(); toast(ok + ' filed.' + (errs.length ? ' Not filed: ' + errs.join(' ') : ''), errs.length ? 'err' : ''); });
+  });
+  api('getCaptures', S.pin, 'New').then(function (list) {
+    if (route().page !== 'review') return;
+    $('#rvList').innerHTML = list.length ? list.map(card).join('') + potDatalist('potRefs') : '';
+    list.forEach(bind); count();
+  }).catch(function (err) { $('#rvList').innerHTML = '<p class="hint bad">' + esc(err.message) + '</p>'; });
+}
+
+/* ================= flower calendar ================= */
+var WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+var MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function viewCalendar(arg) {
+  var a = parseArgs(arg);
+  var F = S.calF = S.calF || { view: 'month', ym: today().slice(0, 7), year: +today().slice(0, 4), group: '', plant: '', variety: '', pot: '', colour: '', stage: '', kind: '', day: '' };
+  if (a.view) F.view = a.view;
+  if (a.m) { F.ym = a.m; F.year = +a.m.slice(0, 4); F.day = ''; }
+  if (a.plant) { F.plant = decodeURIComponent(a.plant); F.group = ''; F.variety = ''; }
+  var groups = [];
+  S.boot.plants.forEach(function (p) { if (p.group && groups.indexOf(p.group) < 0) groups.push(p.group); });
+  var stages = ((S.boot.lists && S.boot.lists['Photo stages']) || FLOWER_STAGES);
+  app.innerHTML = '<div class="page-h"><h1>Flower calendar</h1><p class="muted">Every day you took photos. Filter by plant, variety, pot or colour.</p></div>' +
+    '<div class="tabs" role="tablist" aria-label="Calendar view" style="max-width:420px"><button type="button" role="tab" data-cv="month">Month</button><button type="button" role="tab" data-cv="year">Year</button></div>' +
+    '<details class="addbox cal-f" id="calF"' + (window.innerWidth > 760 || F.plant || F.colour || F.pot ? ' open' : '') + '><summary>Filters <span class="muted sm" id="calFN"></span></summary><div class="form" style="max-width:none"><div class="f2">' +
+      '<div class="field"><label for="cfG">Group</label><select id="cfG"><option value="">All groups</option>' + groups.map(function (g) { return '<option' + (g === F.group ? ' selected' : '') + '>' + esc(g) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label for="cfP">Plant</label><select id="cfP"></select></div>' +
+      '<div class="field"><label for="cfV">Variety</label><select id="cfV"></select></div>' +
+      '<div class="field"><label for="cfPot">Pot ref</label><input id="cfPot" autocomplete="off" autocapitalize="characters" placeholder="e.g. T036" value="' + esc(F.pot) + '"></div>' +
+      '<div class="field"><label for="cfC">Colour</label><select id="cfC"><option value="">Any colour</option>' + colourNames().map(function (c) { return '<option' + (c === F.colour ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label for="cfS">Stage</label><select id="cfS"><option value="">Any stage</option>' + stages.map(function (x) { return '<option' + (x === F.stage ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label for="cfK">Show</label><select id="cfK"><option value="">All photos</option><option value="new"' + (F.kind === 'new' ? ' selected' : '') + '>New photos</option><option value="old"' + (F.kind === 'old' ? ' selected' : '') + '>Old photos (archive)</option></select></div>' +
+      '</div><div><button type="button" class="btn sm" id="cfClear">Clear filters</button></div></div></details>' +
+    '<div id="calBody"><p class="muted">Loading…</p></div>';
+  function fillPlants() {
+    var ps = S.boot.plants.filter(function (p) { return !F.group || p.group === F.group; });
+    if (F.plant && !ps.some(function (p) { return p.id === F.plant; })) F.plant = '';
+    $('#cfP').innerHTML = '<option value="">All plants</option>' + ps.map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === F.plant ? ' selected' : '') + '>' + esc(p.en) + '</option>'; }).join('');
+    var vs = F.plant ? S.boot.varieties.filter(function (v) { return v.plantId === F.plant; }) : [];
+    if (F.variety && !vs.some(function (v) { return v.id === F.variety; })) F.variety = '';
+    $('#cfV').innerHTML = '<option value="">' + (F.plant ? 'All varieties' : 'Pick a plant first') + '</option>' + vs.map(function (v) { return '<option value="' + esc(v.id) + '"' + (v.id === F.variety ? ' selected' : '') + '>' + esc(varLabel(v)) + '</option>'; }).join('');
+    $('#cfV').disabled = !F.plant;
+  }
+  function match(p) {
+    var pl = S.pm[p.plantId] || {};
+    if (F.group && pl.group !== F.group) return false;
+    if (F.plant && p.plantId !== F.plant) return false;
+    if (F.variety && p.varietyId !== F.variety) return false;
+    if (F.pot) { var a1 = parseRef(F.pot), b1 = parseRef(p.potNo); if (String(p.potNo || '').toUpperCase() !== F.pot.toUpperCase() && !(a1 && b1 && a1.code === b1.code && a1.num === b1.num)) return false; }
+    if (F.colour && splitColours(p.colour).concat(splitColours(p.edge), splitColours(p.centre)).indexOf(F.colour) < 0) return false;
+    if (F.stage && p.stage !== F.stage) return false;
+    if (F.kind === 'new' && p.archive) return false;
+    if (F.kind === 'old' && !p.archive) return false;
+    return true;
+  }
+  function nFilters() { var n = ['group', 'plant', 'variety', 'pot', 'colour', 'stage', 'kind'].filter(function (k) { return F[k]; }).length; $('#calFN').textContent = n ? '(' + n + ' on)' : ''; }
+  function monthData(ym) {
+    S.calCache = S.calCache || {};
+    var key = ym + (S.preview ? 'f' : '');
+    if (S.calCache[key]) return Promise.resolve(S.calCache[key]);
+    return api('getCalendar', S.pin, ym + '-01', ym + '-31', S.preview).then(function (list) { S.calCache[key] = list; return list; });
+  }
+  function drawMonth() {
+    var ym = F.ym, y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 1;
+    $('#calBody').innerHTML = '<div class="cal-nav"><button type="button" class="icon-btn" data-cm="-1" aria-label="Previous month">' + icon('back') + '</button>' +
+      '<h2 aria-live="polite">' + MONTH_FULL[m] + ' ' + y + '</h2><button type="button" class="icon-btn" data-cm="1" aria-label="Next month">' + icon('next') + '</button>' +
+      '<button type="button" class="btn sm" data-cm="0">This month</button></div><div id="calGrid"><p class="muted">Loading…</p></div><div id="calDay"></div>';
+    monthData(ym).then(function (list) {
+      if (route().page !== 'calendar' || F.ym !== ym || F.view !== 'month') return;
+      var rows = list.filter(match), byDay = {};
+      rows.forEach(function (p) { (byDay[p.date] = byDay[p.date] || []).push(p); });
+      var first = new Date(y, m, 1).getDay(), days = new Date(y, m + 1, 0).getDate(), t = today(), cells = '';
+      for (var i = 0; i < first; i++) cells += '<div class="cal-c cal-blank" aria-hidden="true"></div>';
+      for (var d = 1; d <= days; d++) {
+        var ds = ym + '-' + pad(d), ph = byDay[ds] || [];
+        cells += '<button type="button" class="cal-c' + (ph.length ? ' has' : '') + (ds === t ? ' today' : '') + (ds === F.day ? ' sel' : '') + '" data-day="' + ds + '"' + (ph.length ? '' : ' disabled') +
+          ' aria-label="' + d + ' ' + MONTH_FULL[m] + ': ' + ph.length + (ph.length === 1 ? ' photo' : ' photos') + '"><span class="cal-d">' + d + '</span>' +
+          (ph.length ? '<span class="cal-th">' + ph.slice(0, 3).map(function (x) { return '<img src="' + imgUrl(x.fileId, 120) + '" alt="" loading="lazy">'; }).join('') + '</span>' +
+            '<span class="cal-n">' + ph.length + '</span>' : '') + '</button>';
+      }
+      var plantsShot = {}; rows.forEach(function (p) { plantsShot[p.plantId] = 1; });
+      $('#calGrid').innerHTML = '<p class="muted sm">' + rows.length + (rows.length === 1 ? ' photo' : ' photos') + ' on ' + Object.keys(byDay).length + ' days · ' + Object.keys(plantsShot).length + ' plants</p>' +
+        '<div class="cal-w" aria-hidden="true">' + WEEK.map(function (w) { return '<span>' + w + '</span>'; }).join('') + '</div><div class="cal-g">' + cells + '</div>';
+      S.calByDay = byDay;
+      if (F.day && byDay[F.day]) showDay(F.day);
+    }).catch(function (err) { $('#calGrid').innerHTML = '<p class="hint bad">' + esc(err.message) + '</p>'; });
+  }
+  function showDay(ds) {
+    F.day = ds;
+    $$('.cal-c[data-day]', app).forEach(function (b) { b.classList.toggle('sel', b.dataset.day === ds); });
+    var list = (S.calByDay || {})[ds] || [];
+    $('#calDay').innerHTML = '<section class="sec" style="margin-top:20px"><h2>' + esc(fmtDate(ds)) + ' · ' + list.length + (list.length === 1 ? ' photo' : ' photos') + '</h2>' + photoGrid('calday', list) + '</section>';
+  }
+  function drawYear() {
+    var y = F.year;
+    $('#calBody').innerHTML = '<div class="cal-nav"><button type="button" class="icon-btn" data-cy="-1" aria-label="Previous year">' + icon('back') + '</button><h2>' + y + '</h2>' +
+      '<button type="button" class="icon-btn" data-cy="1" aria-label="Next year">' + icon('next') + '</button></div>' +
+      '<p class="muted sm">Flowers photographed each month (new photos only). Dotted boxes show the months the care guide expects flowers. Tap a box to see that month.</p><div id="yearT"><p class="muted">Loading…</p></div>' +
+      '<ul class="legend" style="margin-top:10px"><li><i class="yc-l1"></i>1–2</li><li><i class="yc-l2"></i>3–5</li><li><i class="yc-l3"></i>6 or more</li><li><i class="yc-exp"></i>Expected</li></ul>';
+    api('getYearStats', S.pin, y, S.preview).then(function (st) {
+      if (route().page !== 'calendar' || F.view !== 'year' || F.year !== y) return;
+      var plants = S.boot.plants.filter(function (p) { return (!F.group || p.group === F.group) && (!F.plant || p.id === F.plant) && (st[p.id] || isFlowering(p)); });
+      plants.sort(function (a1, b1) { var x = st[b1.id] ? st[b1.id].flowers.reduce(function (s1, n) { return s1 + n; }, 0) : 0, z = st[a1.id] ? st[a1.id].flowers.reduce(function (s1, n) { return s1 + n; }, 0) : 0; return x - z || a1.en.localeCompare(b1.en); });
+      $('#yearT').innerHTML = '<div class="tbl-wrap"><table class="yt"><thead><tr><th>Plant</th>' + MONTHS.map(function (m2) { return '<th>' + m2 + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        plants.map(function (p) {
+          var se = seasonOf(p), row = st[p.id] || { flowers: new Array(12).fill(0), photos: new Array(12).fill(0) };
+          return '<tr><th scope="row"><a href="#/plant/' + esc(p.id) + '">' + esc(p.en) + '</a></th>' + MONTHS.map(function (m2, i) {
+            var n = row.flowers[i], ph = row.photos[i], exp = se.flower[i] && !se.rest[i];
+            var lv = n >= 6 ? 3 : n >= 3 ? 2 : n >= 1 ? 1 : 0;
+            return '<td><button type="button" class="yc' + (lv ? ' yc-l' + lv : '') + (exp ? ' yc-exp' : '') + '" data-ym="' + y + '-' + pad(i + 1) + '" data-p="' + esc(p.id) + '"' +
+              ' aria-label="' + esc(p.en) + ', ' + MONTH_FULL[i] + ': ' + n + ' flowers, ' + ph + ' photos' + (exp ? ', expected' : '') + '">' + (n || (ph ? '·' : '')) + '</button></td>';
+          }).join('') + '</tr>';
+        }).join('') + '</tbody></table></div>' + (plants.length ? '' : '<p class="muted">No plants match the filters.</p>');
+    }).catch(function (err) { $('#yearT').innerHTML = '<p class="hint bad">' + esc(err.message) + '</p>'; });
+  }
+  function draw() {
+    nFilters();
+    $$('[data-cv]', app).forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.cv === F.view)); });
+    if (F.view === 'year') drawYear(); else drawMonth();
+  }
+  function shiftMonth(d) {
+    if (d === 0) F.ym = today().slice(0, 7);
+    else { var y = +F.ym.slice(0, 4), m = +F.ym.slice(5, 7) - 1 + d; y += Math.floor(m / 12); m = ((m % 12) + 12) % 12; F.ym = y + '-' + pad(m + 1); }
+    F.year = +F.ym.slice(0, 4); F.day = ''; drawMonth();
+  }
+  app.onclick = function (e) {
+    var b = e.target.closest('[data-cv],[data-cm],[data-cy],[data-day],[data-ym]'); if (!b) return;
+    if (b.dataset.cv) { F.view = b.dataset.cv; draw(); }
+    else if (b.dataset.cm !== undefined) shiftMonth(+b.dataset.cm);
+    else if (b.dataset.cy) { F.year += +b.dataset.cy; drawYear(); }
+    else if (b.dataset.day) showDay(b.dataset.day);
+    else if (b.dataset.ym) { F.view = 'month'; F.ym = b.dataset.ym; F.plant = b.dataset.p; F.group = ''; F.variety = ''; F.day = ''; fillPlants(); draw(); }
+  };
+  function onFilter() {
+    F.group = $('#cfG').value; F.plant = $('#cfP').value; F.variety = $('#cfV').value; F.pot = $('#cfPot').value.trim(); F.colour = $('#cfC').value; F.stage = $('#cfS').value; F.kind = $('#cfK').value;
+    fillPlants(); F.day = ''; draw();
+  }
+  ['cfG', 'cfP', 'cfV', 'cfC', 'cfS', 'cfK'].forEach(function (id) { $('#' + id).addEventListener('change', onFilter); });
+  $('#cfPot').addEventListener('change', onFilter);
+  $('#cfClear').addEventListener('click', function () {
+    ['group', 'plant', 'variety', 'pot', 'colour', 'stage', 'kind'].forEach(function (k) { F[k] = ''; });
+    $('#cfG').value = ''; $('#cfPot').value = ''; $('#cfC').value = ''; $('#cfS').value = ''; $('#cfK').value = ''; fillPlants(); draw();
+  });
+  fillPlants(); draw();
 }
 
 /* ================= start ================= */

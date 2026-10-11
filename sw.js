@@ -1,6 +1,6 @@
 /* Garden@109A – keeps the app screens on the phone so it opens fast.
    Garden data always comes fresh from Google; it is never cached here. */
-const CACHE = 'g109a-v4';
+const CACHE = 'g109a-v7';
 const SHELL = ['./', './index.html', './app.js', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', function (e) {
