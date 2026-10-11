@@ -130,6 +130,51 @@ var SWATCH = { 'White': '#FFFFFF', 'Cream': '#F3E9C6', 'Yellow': '#F2C94C', 'Gol
   'Peach': '#F6B99A', 'Red': '#D64545', 'Maroon': '#7A1F2B', 'Pink': '#E58BA8', 'Light pink': '#F5C6D6',
   'Magenta': '#C2185B', 'Purple': '#7E57C2', 'Lavender': '#B39DDB', 'Blue': '#4F7BD9', 'Green': '#6BAA75',
   'Multi-colour': 'conic-gradient(#E58BA8 0 25%,#F2C94C 0 50%,#7E57C2 0 75%,#6BAA75 0)' };
+function swatchOf(c) { var m = S.boot && S.boot.meta && S.boot.meta.swatches; return (m && m[c]) || SWATCH[c] || '#C9D3C8'; }
+function hexOf(c) { var v = swatchOf(c); return /^#[0-9a-f]{6}$/i.test(v) ? v : '#C9D3C8'; }
+function hiddenOf(list) { return (S.boot && S.boot.meta && S.boot.meta.hidden && S.boot.meta.hidden[list]) || []; }
+function splitColours(s) { return String(s || '').split(/\s*,\s*/).filter(Boolean); }
+function varColours(v) { return v ? [v.colour].concat(splitColours(v.colour2)).filter(Boolean) : []; }
+function colourNames(keep) {
+  var vals = (S.boot.lists && S.boot.lists['Colours']) || Object.keys(SWATCH), hid = hiddenOf('Colours');
+  keep = keep || [];
+  return vals.filter(function (c) { return (hid.indexOf(c) < 0 && c !== 'Multi-colour') || keep.indexOf(c) >= 0; });
+}
+function colourPicker(id, selected) {
+  selected = selected || [];
+  return '<div class="swatches" id="' + id + '" role="group" aria-label="Colours, pick one or more">' + colourNames(selected).map(function (c) {
+    return swatchBtn(c, selected.indexOf(c) >= 0);
+  }).join('') + '<button type="button" class="swatch swatch-add" data-newcolour>' + icon('plus', 16) + 'New colour</button></div>';
+}
+function swatchBtn(c, on) {
+  return '<button type="button" class="swatch" data-c="' + esc(c) + '" aria-pressed="' + (on ? 'true' : 'false') + '"><span class="sw-dot" style="background:' + swatchOf(c) + '"></span>' + esc(c) + '</button>';
+}
+function bindColourPicker(id) {
+  var el = $('#' + id);
+  var api2 = {
+    get: function () { return $$('.swatch[data-c][aria-pressed="true"]', el).map(function (b) { return b.dataset.c; }); },
+    set: function (arr) {
+      arr = arr || [];
+      arr.forEach(function (c) { if (!$('.swatch[data-c="' + c.replace(/"/g, '') + '"]', el)) $('[data-newcolour]', el).insertAdjacentHTML('beforebegin', swatchBtn(c, false)); });
+      $$('.swatch[data-c]', el).forEach(function (b) { b.setAttribute('aria-pressed', arr.indexOf(b.dataset.c) >= 0 ? 'true' : 'false'); });
+    }
+  };
+  el.addEventListener('click', function (e) {
+    var b = e.target.closest('.swatch'); if (!b) return;
+    if (b.hasAttribute('data-newcolour')) {
+      var name = (window.prompt('Name of the new colour (for example: Coral)') || '').trim();
+      if (!name) return;
+      api('saveListValue', S.pin, 'Colours', '', name, false).then(function () {
+        S.boot.lists['Colours'] = (S.boot.lists['Colours'] || []).concat([name]);
+        b.insertAdjacentHTML('beforebegin', swatchBtn(name, true));
+        toast(name + ' added. You can set its swatch colour in Masters.');
+      }).catch(function (err) { toast(err.message, 'err'); });
+      return;
+    }
+    b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+  });
+  return api2;
+}
 function tintOf(colour) {
   var m = { 'White': '#EEF1EA', 'Cream': '#F6F0DA', 'Yellow': '#FBF0C9', 'Golden': '#F8E2A8', 'Orange': '#FBE3C9', 'Peach': '#FBE6DA',
     'Red': '#F9D9D2', 'Maroon': '#F0D6DA', 'Pink': '#F7DCE4', 'Light pink': '#FBE8EE', 'Magenta': '#F6D3E1', 'Purple': '#E9E0F5',
@@ -233,7 +278,8 @@ function plantOptions(sel) {
   }).join('');
 }
 function listOptions(name, sel, blank) {
-  var vals = (S.boot.lists && S.boot.lists[name]) || [];
+  var hid = hiddenOf(name);
+  var vals = ((S.boot.lists && S.boot.lists[name]) || []).filter(function (v) { return hid.indexOf(v) < 0 || v === sel; });
   return (blank != null ? '<option value="">' + esc(blank) + '</option>' : '') + vals.map(function (v) {
     return '<option' + (v === sel ? ' selected' : '') + '>' + esc(v) + '</option>';
   }).join('');
@@ -259,8 +305,14 @@ function potDatalist(id) {
 }
 
 /* ================= images ================= */
+function readBytes(blob) {
+  if (blob.arrayBuffer) return blob.arrayBuffer();
+  return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(r.result); }; r.onerror = rej; r.readAsArrayBuffer(blob); });
+}
 function readExif(file) {
-  return file.slice(0, 262144).arrayBuffer().then(function (buf) {
+  var start;
+  try { start = readBytes(file.slice(0, 262144)); } catch (e) { return Promise.resolve(null); }
+  return Promise.resolve(start).then(function (buf) {
     var v = new DataView(buf);
     if (v.byteLength < 4 || v.getUint16(0) !== 0xFFD8) return null;
     var off = 2;
@@ -320,15 +372,14 @@ function gallery(key, list, emptyText) {
   var slides = list.map(function (p, i) {
     return '<figure class="gal-slide" aria-hidden="' + (i ? 'true' : 'false') + '">' +
       '<button class="gal-open" data-act="lb" data-lb="' + key + '" data-i="' + i + '" aria-label="Open photo ' + (i + 1) + '">' +
-      '<img src="' + imgUrl(p.fileId, 1200) + '" alt="' + esc(photoAlt(p)) + '" loading="' + (i < 2 ? 'eager' : 'lazy') + '"></button>' +
-      '<figcaption>' + caption(p) + '</figcaption></figure>';
+      '<img src="' + imgUrl(p.fileId, 1200) + '" alt="' + esc(photoAlt(p)) + '" loading="' + (i < 2 ? 'eager' : 'lazy') + '"></button></figure>';
   }).join('');
   var ctl = list.length > 1 ?
     '<div class="gal-ctl"><button type="button" data-g="prev" aria-label="Previous photo">' + icon('back') + '</button>' +
     '<button type="button" data-g="pause" aria-label="Pause slideshow">' + icon('pause') + '</button>' +
     '<button type="button" data-g="next" aria-label="Next photo">' + icon('next') + '</button></div>' +
     '<div class="gal-dots">' + list.map(function (_, i) { return '<button type="button" data-g="dot" data-i="' + i + '" aria-label="Show photo ' + (i + 1) + '"></button>'; }).join('') + '</div>' : '';
-  return '<div class="gal" data-gal="' + key + '" role="region" aria-roledescription="carousel" aria-label="Photo gallery, changes by itself"><div class="gal-track">' + slides + '</div>' + ctl + '</div>';
+  return '<div class="gal" data-gal="' + key + '" role="region" aria-roledescription="carousel" aria-label="Photo gallery, changes by itself"><div class="gal-view"><div class="gal-track">' + slides + '</div>' + ctl + '</div><div class="gal-cap">' + caption(list[0]) + '</div></div>';
 }
 function mountGallery(key) {
   var el = $('[data-gal="' + key + '"]'); if (!el) return;
@@ -339,6 +390,8 @@ function mountGallery(key) {
     $('.gal-track', el).style.transform = 'translateX(-' + (i * 100) + '%)';
     $$('.gal-slide', el).forEach(function (s, j) { s.setAttribute('aria-hidden', j === i ? 'false' : 'true'); });
     $$('[data-g="dot"]', el).forEach(function (d, j) { d.setAttribute('aria-current', j === i ? 'true' : 'false'); });
+    var cap = $('.gal-cap', el), lst = S.lists[key] || [];
+    if (cap && lst[i]) cap.innerHTML = caption(lst[i]);
   }
   function setPaused(v) {
     paused = v; var b = $('[data-g="pause"]', el);
@@ -371,9 +424,11 @@ function openLb(key, start) {
     lb.innerHTML = '<div class="lb-in"><img src="' + imgUrl(p.fileId, 1800) + '" alt="' + esc(photoAlt(p)) + '">' +
       '<div class="lb-cap">' + caption(p) + '</div><div class="lb-ctl">' +
       (list.length > 1 ? '<button type="button" data-l="prev" aria-label="Previous photo">' + icon('back') + '</button><button type="button" data-l="next" aria-label="Next photo">' + icon('next') + '</button>' : '') +
-      '<button type="button" data-l="close" aria-label="Close">' + icon('close') + '</button></div></div>';
+      '<button type="button" data-l="close" aria-label="Close">' + icon('close') + '</button></div>' +
+      (isOwner() && p.fileId ? '<a class="btn sm lb-edit" href="#/photo/' + encodeURIComponent(p.fileId) + '">Edit details</a>' : '') + '</div>';
   }
-  function close() { lb.hidden = true; lb.innerHTML = ''; document.removeEventListener('keydown', onKey); if (before && before.focus) before.focus(); }
+  function close() { lb.hidden = true; lb.innerHTML = ''; document.removeEventListener('keydown', onKey); S.lbClose = null; if (before && before.focus && !lb.dataset.nav) before.focus(); lb.dataset.nav = ''; }
+  S.lbClose = close;
   function step(d) { k = (k + d + list.length) % list.length; draw(); }
   function onKey(e) { if (e.key === 'Escape') close(); else if (e.key === 'ArrowLeft') step(-1); else if (e.key === 'ArrowRight') step(1); }
   lb.onclick = function (e) {
@@ -396,7 +451,7 @@ function varietyCover(v) {
 function varietyCard(v) {
   return '<a class="card vcard" href="#/variety/' + esc(v.id) + '"><div class="cover">' + varietyCover(v) + '</div><div class="info">' +
     '<h3>' + esc(v.trade || v.name) + '</h3>' + (v.trade ? '<span class="muted sm">' + esc(v.name) + '</span>' : '') +
-    '<div class="meta">' + (v.colour ? '<span>' + esc(v.colour) + '</span>' : '') + (v.petal ? '<span>' + esc(v.petal) + ' petal</span>' : '') + '</div></div></a>';
+    '<div class="meta">' + varColours(v).map(function (c) { return '<span>' + esc(c) + '</span>'; }).join('') + (v.petal ? '<span>' + esc(v.petal) + ' petal</span>' : '') + '</div></div></a>';
 }
 function chipRow(id, items, current, label) {
   return '<div class="chips" role="group" aria-label="' + esc(label) + '" id="' + id + '">' + items.map(function (it) {
@@ -421,10 +476,10 @@ function route() {
 }
 function renderChrome() {
   var owner = isOwner(), real = S.boot && S.boot.realOwner, cur = route().page;
-  var pub = [['', 'Home', 'home'], ['plants', 'Plants', 'plants'], ['varieties', 'Varieties', 'varieties'], ['fish', 'Fish', 'fish']];
-  var own = [['add', 'Add photo', 'add'], ['log', 'Log', 'log'], ['pots', 'Pots', 'pots'], ['buy', 'Buy', 'buy'], ['inputs', 'Inputs', 'inputs'], ['dash', 'Dashboard', 'dash']];
+  var pub = [['', 'Home', 'home'], ['gallery', 'Gallery', 'gallery'], ['plants', 'Plants', 'plants'], ['varieties', 'Varieties', 'varieties'], ['fish', 'Fish', 'fish']];
+  var own = [['add', 'Add photo', 'add'], ['photos', 'Photos', 'photos'], ['log', 'Log', 'log'], ['pots', 'Pots', 'pots'], ['buy', 'Buy', 'buy'], ['inputs', 'Inputs', 'inputs'], ['masters', 'Masters', 'masters'], ['dash', 'Dashboard', 'dash']];
   function link(x) {
-    var on = cur === x[2] || (x[2] === 'plants' && cur === 'plant') || (x[2] === 'varieties' && cur === 'variety') || (x[2] === 'pots' && cur === 'pot');
+    var on = cur === x[2] || (x[2] === 'plants' && cur === 'plant') || (x[2] === 'varieties' && cur === 'variety') || (x[2] === 'pots' && cur === 'pot') || (x[2] === 'photos' && cur === 'photo');
     return '<a class="nav-a' + (on ? ' on' : '') + '" href="#/' + x[0] + '"' + (on ? ' aria-current="page"' : '') + '>' + x[1] + '</a>';
   }
   $('#nav').innerHTML = pub.map(link).join('') + (owner ? '<span class="nav-sep" aria-hidden="true"></span>' + own.map(link).join('') : '');
@@ -438,9 +493,12 @@ function renderChrome() {
 function render() {
   if (!S.boot) return;
   clearInterval(S.timer); S.timer = null;
+  if (S.lbClose) { $('#lb').dataset.nav = '1'; S.lbClose(); }
+  if (S.io) { S.io.disconnect(); S.io = null; }
+  app.onclick = null; app.onchange = null;
   var r = route(), owner = isOwner();
-  var pub = { home: viewHome, plants: viewPlants, plant: viewPlant, varieties: viewVarieties, variety: viewVariety, fish: viewFish, signin: viewSignIn };
-  var own = { add: viewAdd, log: viewLog, pots: viewPots, pot: viewPot, buy: viewBuy, inputs: viewInputs, dash: viewDash };
+  var pub = { home: viewHome, gallery: viewGallery, plants: viewPlants, plant: viewPlant, varieties: viewVarieties, variety: viewVariety, fish: viewFish, signin: viewSignIn };
+  var own = { add: viewAdd, photos: viewPhotos, photo: viewPhoto, log: viewLog, pots: viewPots, pot: viewPot, buy: viewBuy, inputs: viewInputs, masters: viewMasters, dash: viewDash };
   renderChrome();
   var fn = pub[r.page] || (owner ? own[r.page] : null) || (own[r.page] ? viewNeedOwner : viewNotFound);
   try { fn(r.arg); } catch (err) {
@@ -449,7 +507,7 @@ function render() {
   }
   window.scrollTo(0, 0);
 }
-var PASSIVE = { home: 1, plants: 1, varieties: 1, fish: 1, dash: 1, inputs: 1 };
+var PASSIVE = { home: 1, plants: 1, varieties: 1, fish: 1, dash: 1, inputs: 1, photos: 1 };
 function bootKey() { return 'g109a_boot_' + (S.pin && !S.preview ? 'owner' : 'family'); }
 function saveBoot(b) { try { localStorage.setItem(bootKey(), JSON.stringify(b)); } catch (e) { /* storage full */ } }
 function load() {
@@ -559,7 +617,7 @@ function viewPlant(id) {
     ['Propagation', p.prop], ['Pruning method', p.prune], ['Pests and diseases', p.pests], ['Repot every', p.repot], ['Notes', p.notes]]
     .filter(function (c) { return c[1]; });
   var colours = [], petals = [];
-  vars.forEach(function (v) { if (v.colour && colours.indexOf(v.colour) < 0) colours.push(v.colour); if (v.petal && petals.indexOf(v.petal) < 0) petals.push(v.petal); });
+  vars.forEach(function (v) { varColours(v).forEach(function (c) { if (colours.indexOf(c) < 0) colours.push(c); }); if (v.petal && petals.indexOf(v.petal) < 0) petals.push(v.petal); });
   var gm = GROUP[p.group] || {};
 
   app.innerHTML =
@@ -585,15 +643,15 @@ function viewPlant(id) {
     '<section class="sec"><div class="sec-h"><h2>Photos</h2>' + (owner ? '<a class="btn sm" href="#/add/plant=' + esc(id) + '">' + icon('camera') + 'Add photo</a>' : '') + '</div><div id="pphotos"><p class="muted">Loading photos…</p></div></section>' +
 
     ((vars.length || owner) ? '<section class="sec"><div class="sec-h"><h2>Varieties</h2><span class="muted sm" id="vcount"></span></div>' +
-      (colours.length > 1 ? chipRow('vcol', [['all', 'All colours']].concat(colours.map(function (c) { return [c, c, SWATCH[c]]; })), 'all', 'Colour') : '') +
+      (colours.length > 1 ? chipRow('vcol', [['all', 'All colours']].concat(colours.map(function (c) { return [c, c, swatchOf(c)]; })), 'all', 'Colour') : '') +
       (petals.length > 1 ? chipRow('vpet', [['all', 'Any petal']].concat(petals.map(function (x) { return [x, x + ' petal']; })), 'all', 'Petal type') : '') +
       '<div class="grid g-cards" id="vgrid"></div>' +
       (owner ? '<details class="addbox" id="avBox"' + (vars.length ? '' : ' open') + '><summary>' + icon('plus') + '&nbsp;Add a variety</summary>' +
         '<form id="avForm" class="form"><div class="f2">' +
         '<div class="field"><label for="avName">Variety name</label><input id="avName" autocomplete="off" placeholder="e.g. White Rabbit"></div>' +
         '<div class="field"><label for="avTrade">Trade name (optional)</label><input id="avTrade" autocomplete="off"></div>' +
-        '<div class="field"><label for="avColour">Main colour</label><select id="avColour">' + listOptions('Colours', '', 'Not set') + '</select></div>' +
         '<div class="field"><label for="avPetal">Petal type</label><select id="avPetal">' + listOptions('Petal types', '', 'Not set') + '</select></div></div>' +
+        '<div class="field"><span class="lbl">Colours (tap one or more; the first is the main colour)</span>' + colourPicker('avColours', []) + '</div>' +
         '<div class="field"><label for="avNotes">Notes (optional)</label><textarea id="avNotes" rows="2"></textarea></div>' +
         '<button class="btn btn-primary" type="submit">Add variety</button></form></details>' : '') + '</section>' : '') +
 
@@ -611,23 +669,24 @@ function viewPlant(id) {
   // varieties grid with filters
   var fc = 'all', fp = 'all';
   function drawVars() {
-    var list = vars.filter(function (v) { return (fc === 'all' || v.colour === fc) && (fp === 'all' || v.petal === fp); });
+    var list = vars.filter(function (v) { return (fc === 'all' || varColours(v).indexOf(fc) >= 0) && (fp === 'all' || v.petal === fp); });
     var g = $('#vgrid'); if (!g) return;
     g.innerHTML = list.map(varietyCard).join('') || '<p class="muted">No variety matches these filters.</p>';
     var c = $('#vcount'); if (c) c.textContent = list.length + ' of ' + vars.length;
   }
-  var avForm = $('#avForm');
+  var avForm = $('#avForm'), avPick = avForm ? bindColourPicker('avColours') : null;
   if (avForm) avForm.addEventListener('submit', function (e) {
     e.preventDefault();
     var name = $('#avName').value.trim();
     if (!name) { toast('Type the variety name.', 'err'); $('#avName').focus(); return; }
-    var nv = { plantId: id, name: name, trade: $('#avTrade').value.trim(), colour: $('#avColour').value, petal: $('#avPetal').value, notes: $('#avNotes').value.trim() };
+    var cols = avPick.get();
+    var nv = { plantId: id, name: name, trade: $('#avTrade').value.trim(), colours: cols, colour: cols[0] || '', colour2: cols.slice(1).join(', '), petal: $('#avPetal').value, notes: $('#avNotes').value.trim() };
     var btn = $('button[type=submit]', avForm); btn.disabled = true;
     api('saveVariety', S.pin, nv).then(function (vid) {
       if (S.vm[vid]) { toast(name + ' is already in the list.'); return; }
       nv.id = vid; nv.photo = ''; S.boot.varieties.push(nv); S.vm[vid] = nv; vars.push(nv);
       toast(name + ' added.');
-      $('#avName').value = ''; $('#avTrade').value = ''; $('#avNotes').value = ''; $('#avName').focus();
+      $('#avName').value = ''; $('#avTrade').value = ''; $('#avNotes').value = ''; avPick.set([]); $('#avName').focus();
       drawVars(); saveBoot(S.boot);
     }).catch(function (err) { toast(err.message, 'err'); }).then(function () { btn.disabled = false; });
   });
@@ -665,14 +724,14 @@ function viewVarieties() {
   var vars = S.boot.varieties, plantIds = [], colours = [], petals = [];
   vars.forEach(function (v) {
     if (plantIds.indexOf(v.plantId) < 0) plantIds.push(v.plantId);
-    if (v.colour && colours.indexOf(v.colour) < 0) colours.push(v.colour);
+    varColours(v).forEach(function (c) { if (colours.indexOf(c) < 0) colours.push(c); });
     if (v.petal && petals.indexOf(v.petal) < 0) petals.push(v.petal);
   });
   app.innerHTML = '<div class="page-h"><h1>Varieties</h1><p class="muted">' + vars.length + ' varieties. Filter by plant, colour or petal type.</p></div>' +
     '<div class="f2" style="max-width:760px"><div class="field"><label for="vp">Plant</label><select id="vp"><option value="">All plants</option>' +
       plantIds.map(function (id) { return '<option value="' + esc(id) + '">' + esc(plantName(id)) + '</option>'; }).join('') + '</select></div>' +
     '<div class="field"><label for="vq">Search</label><input id="vq" type="search" placeholder="Variety or trade name" autocomplete="off"></div></div>' +
-    (colours.length ? '<div style="margin-top:14px">' + chipRow('vlc', [['all', 'All colours']].concat(colours.map(function (c) { return [c, c, SWATCH[c]]; })), 'all', 'Colour') + '</div>' : '') +
+    (colours.length ? '<div style="margin-top:14px">' + chipRow('vlc', [['all', 'All colours']].concat(colours.map(function (c) { return [c, c, swatchOf(c)]; })), 'all', 'Colour') + '</div>' : '') +
     (petals.length ? '<div style="margin-top:10px">' + chipRow('vlp', [['all', 'Any petal']].concat(petals.map(function (x) { return [x, x + ' petal']; })), 'all', 'Petal type') + '</div>' : '') +
     '<p class="muted sm" id="vlcount" role="status" style="margin:14px 0 10px"></p><div class="grid g-cards" id="vlgrid"></div>' +
     '<div style="margin-top:16px"><button type="button" class="btn" id="vmore" hidden>Show more</button></div>';
@@ -680,7 +739,7 @@ function viewVarieties() {
   function draw() {
     var pid = $('#vp').value, q = $('#vq').value.trim().toLowerCase();
     var list = vars.filter(function (v) {
-      return (!pid || v.plantId === pid) && (fc === 'all' || v.colour === fc) && (fp === 'all' || v.petal === fp) &&
+      return (!pid || v.plantId === pid) && (fc === 'all' || varColours(v).indexOf(fc) >= 0) && (fp === 'all' || v.petal === fp) &&
         (!q || (v.name + ' ' + v.trade + ' ' + plantName(v.plantId)).toLowerCase().indexOf(q) >= 0);
     });
     $('#vlgrid').innerHTML = list.slice(0, shown).map(varietyCard).join('') || '<div class="empty">No variety matches. Change the filters.</div>';
@@ -699,7 +758,7 @@ function viewVariety(id) {
   var v = S.vm[id]; if (!v) return viewNotFound();
   var owner = isOwner(), p = S.pm[v.plantId] || {};
   var vendor = owner && v.vendorId ? (S.boot.vendors || []).filter(function (x) { return x.id === v.vendorId; })[0] : null;
-  var facts = [['Colour', [v.colour, v.colour2].filter(Boolean).join(' and ')], ['Petal type', v.petal], ['Flower size', v.size], ['Fragrance', v.fragrance]];
+  var facts = [['Colours', varColours(v).join(', ')], ['Petal type', v.petal], ['Flower size', v.size], ['Fragrance', v.fragrance]];
   if (owner) facts = facts.concat([['Bought from', vendor ? vendor.name : ''], ['Date bought', fmtDate(v.bought)], ['Cost', money(v.cost)], ['Pots now', v.potsNow]]);
   app.innerHTML = '<a class="back" href="#/plant/' + esc(v.plantId) + '">' + icon('back') + esc(p.en || 'Plant') + '</a>' +
     '<div class="page-h"><h1>' + esc(v.trade || v.name) + '</h1><p class="muted">' + esc([v.trade ? v.name : '', p.en].filter(Boolean).join(', ')) + '</p></div>' +
@@ -780,11 +839,75 @@ function viewNotFound() { app.innerHTML = '<div class="empty"><h1>Page not found
 /* ================= owner: add photos ================= */
 var FLOWER_STAGES = ['Bud', 'Bud opening', 'Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6', 'Day 7', 'Full bloom', 'Fading', 'Dried', 'Seed pod', 'Seeds'];
 var NEW_BLOOM_STAGES = ['Bud', 'Bud opening', 'Day 1'];
+function isFlowerStage(st) { return FLOWER_STAGES.indexOf(st) >= 0 || /^(bud|day\s*\d+|full bloom|fading|dried|seed)/i.test(String(st || '')); }
 
+/* ---------- typable search box (combobox) ---------- */
+function comboHtml(id, label, placeholder) {
+  return '<div class="field combo"><label for="' + id + '">' + esc(label) + '</label>' +
+    '<input id="' + id + '" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="' + id + 'List" autocomplete="off" spellcheck="false" placeholder="' + esc(placeholder || 'Type to search') + '">' +
+    '<ul class="combo-list" id="' + id + 'List" role="listbox" hidden></ul></div>';
+}
+function Combo(id, options, value) {
+  var input = $('#' + id), list = $('#' + id + 'List'), cur = '', opts = [], shown = [], active = -1, cbs = [];
+  function labelOf(v) { var o = opts.filter(function (x) { return x.value === v; })[0]; return o ? o.label : ''; }
+  function hi() {
+    $$('li[data-i]', list).forEach(function (li, i) { li.classList.toggle('on', i === active); });
+    if (active >= 0) input.setAttribute('aria-activedescendant', id + '_o' + active); else input.removeAttribute('aria-activedescendant');
+  }
+  function open(term) {
+    var t = String(term || '').trim().toLowerCase();
+    shown = opts.filter(function (o) { return o.always || !t || (o.label + ' ' + (o.search || '')).toLowerCase().indexOf(t) >= 0; }).slice(0, 80);
+    active = t && shown.length ? shown.findIndex(function (o) { return !o.always; }) : -1;
+    list.innerHTML = shown.map(function (o, i) {
+      return '<li role="option" id="' + id + '_o' + i + '" data-i="' + i + '" aria-selected="' + (o.value === cur) + '"' + (o.cls ? ' class="' + o.cls + '"' : '') + '>' +
+        esc(o.label) + (o.hint ? '<span class="combo-hint">' + esc(o.hint) + '</span>' : '') + '</li>';
+    }).join('') || '<li class="combo-none">No match</li>';
+    list.hidden = false; input.setAttribute('aria-expanded', 'true'); hi();
+  }
+  function close() { list.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; hi(); }
+  function pick(o) { var changed = o.value !== cur; cur = o.value; input.value = o.label; close(); if (changed) cbs.forEach(function (f) { f(cur); }); }
+  input.addEventListener('focus', function () { if (input.select) input.select(); open(''); });
+  input.addEventListener('input', function () { open(input.value); });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); if (list.hidden) open(input.value);
+      var n = shown.length; if (!n) return;
+      active = e.key === 'ArrowDown' ? (active + 1) % n : (active - 1 + n) % n; hi();
+    } else if (e.key === 'Enter') {
+      if (!list.hidden && shown.length) { e.preventDefault(); pick(shown[active < 0 ? 0 : active]); }
+    } else if (e.key === 'Escape') { close(); input.value = labelOf(cur); }
+  });
+  list.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  list.addEventListener('click', function (e) { var li = e.target.closest('li[data-i]'); if (li) pick(shown[+li.dataset.i]); });
+  input.addEventListener('blur', function () { setTimeout(function () { if (document.activeElement !== input) { close(); input.value = labelOf(cur); } }, 180); });
+  var self = {
+    input: input,
+    get value() { return cur; },
+    set value(v) { cur = v || ''; input.value = labelOf(cur); },
+    setOptions: function (o, v) { opts = o || []; if (v !== undefined) cur = v || ''; if (!opts.some(function (x) { return x.value === cur; })) cur = ''; input.value = labelOf(cur); },
+    onChange: function (f) { cbs.push(f); },
+    focus: function () { input.focus(); }
+  };
+  self.setOptions(options, value);
+  return self;
+}
+function plantComboOpts() {
+  return S.boot.plants.map(function (p) { return { value: p.id, label: p.en, hint: p.group, search: [p.ta, p.te, p.ml, p.kn, p.hi, p.bot, p.group].join(' ') }; });
+}
+function varietyComboOpts(plantId, withNew) {
+  var o = [{ value: '', label: 'Not sure / general', always: true }].concat(S.boot.varieties.filter(function (v) { return v.plantId === plantId; }).map(function (v) {
+    return { value: v.id, label: varLabel(v), hint: varColours(v).join(', '), search: v.name + ' ' + v.trade + ' ' + varColours(v).join(' ') };
+  }));
+  if (withNew) o.push({ value: '__new', label: '+ New variety', always: true, cls: 'combo-new' });
+  return o;
+}
+function potsOfVariety(vid) { return activePots().filter(function (p) { return p.varietyId === vid; }); }
+
+/* ================= owner: add photos ================= */
 function viewAdd(arg) {
   var b = S.boot, pre = parseArgs(arg);
   var pot = pre.pot ? (b.pots || []).filter(function (x) { return x.uid === pre.pot; })[0] : null;
-  var stages = (b.lists && b.lists['Photo stages']) || FLOWER_STAGES;
+  var stages = ((b.lists && b.lists['Photo stages']) || FLOWER_STAGES).filter(function (x) { return hiddenOf('Photo stages').indexOf(x) < 0; });
   var coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
   S.add = { files: [], seq: 0 };
   app.innerHTML =
@@ -796,16 +919,19 @@ function viewAdd(arg) {
       '<ul class="flist" id="flist"></ul>' +
       '<fieldset class="fs"><legend>Plant</legend><div class="f2">' +
         '<div class="field"><label for="aPot">Pot ref</label><input id="aPot" list="potRefs" placeholder="e.g. T036" autocomplete="off" autocapitalize="characters" value="' + esc(pot ? pot.ref : '') + '">' + potDatalist('potRefs') +
-          '<p class="hint" id="aPotMsg">Optional. Fills plant, variety and colour.</p></div>' +
-        '<div class="field"><label for="aPlant">Plant</label><select id="aPlant">' + plantOptions(pre.plant || (pot && pot.plantId)) + '</select></div>' +
-        '<div class="field"><label for="aVar">Variety</label><select id="aVar"></select></div>' +
-        '<div class="field"><label for="aColour">Colour</label><select id="aColour">' + listOptions('Colours', '', 'Not set') + '</select></div></div>' +
-        '<div class="newvar f2" id="newVar" hidden><div class="field"><label for="nvName">New variety name</label><input id="nvName" placeholder="e.g. Pink multi petal"></div>' +
-          '<div class="field"><label for="nvTrade">Trade name (optional)</label><input id="nvTrade" placeholder="e.g. Cherry"></div>' +
+          '<p class="hint" id="aPotMsg">Optional. Fills plant, variety and colours.</p></div>' +
+        comboHtml('aPlant', 'Plant', 'Type: lotus, sampangi…') + comboHtml('aVar', 'Variety', 'Type a variety name') + '</div>' +
+        '<div class="newpot" id="newPotBox" hidden><p id="newPotText"></p><div class="f2">' +
+          '<div class="field"><label for="npArea">Area (optional)</label><select id="npArea">' + areaOptions('') + '</select></div>' +
+          '<div class="field"><label for="npSize">Pot size in inches (optional)</label><input id="npSize" type="number" inputmode="decimal" min="1"></div></div>' +
+          '<button type="button" class="btn btn-primary" id="npCreate">Create pot</button></div>' +
+        '<div class="newvar f2" id="newVar" hidden><div class="field"><label for="nvName">New variety name</label><input id="nvName" placeholder="e.g. Pink multi petal" autocomplete="off"><p class="hint" id="nvMsg"></p></div>' +
+          '<div class="field"><label for="nvTrade">Trade name (optional)</label><input id="nvTrade" placeholder="e.g. Cherry" autocomplete="off"></div>' +
           '<div class="field"><label for="nvPetal">Petal type</label><select id="nvPetal">' + listOptions('Petal types', '', 'Not set') + '</select></div></div>' +
+        '<div class="field"><span class="lbl">Colours in the photo (tap one or more)</span>' + colourPicker('aColours', []) + '</div>' +
       '</fieldset>' +
-      '<fieldset class="fs"><legend>Stage</legend><div class="chips stage" role="radiogroup" aria-label="Stage">' + stages.map(function (s) {
-        return '<label class="chip-r"><input type="radio" name="stage" value="' + esc(s) + '"><span>' + esc(s) + '</span></label>';
+      '<fieldset class="fs"><legend>Stage</legend><div class="chips stage" role="radiogroup" aria-label="Stage">' + stages.map(function (x) {
+        return '<label class="chip-r"><input type="radio" name="stage" value="' + esc(x) + '"><span>' + esc(x) + '</span></label>';
       }).join('') + '</div></fieldset>' +
       '<fieldset class="fs"><legend>Details</legend>' +
         '<div class="field"><label for="aRemark">Remark</label><textarea id="aRemark" rows="2" placeholder="Anything to remember"></textarea></div>' +
@@ -821,29 +947,44 @@ function viewAdd(arg) {
 }
 
 function bindAdd(pre, pot) {
-  var b = S.boot, A = S.add, curPot = pot || null, bloomToken = 0;
-  var plantSel = $('#aPlant'), varSel = $('#aVar'), colSel = $('#aColour'), potIn = $('#aPot');
+  var A = S.add, curPot = pot || null, bloomToken = 0;
+  var potIn = $('#aPot'), colPick = bindColourPicker('aColours');
+  var plantC = Combo('aPlant', plantComboOpts(), pre.plant || (pot && pot.plantId) || '');
+  var varC = Combo('aVar', varietyComboOpts(plantC.value, true), '');
   function stage() { var r = $('input[name=stage]:checked'); return r ? r.value : ''; }
   function archive() { return $('#aArchive').checked; }
   function potMsg(t, kind) { var m = $('#aPotMsg'); m.textContent = t; m.className = 'hint' + (kind ? ' ' + kind : ''); }
-  function fillVarieties(sel) { varSel.innerHTML = varietyOptions(plantSel.value, sel, true); onVar(); }
-  function onVar() {
-    var v = S.vm[varSel.value];
-    $('#newVar').hidden = varSel.value !== '__new';
-    if (v && v.colour) colSel.value = v.colour;
+  function setPot(p, why) {
+    curPot = p; $('#newPotBox').hidden = true;
+    if (!p) return;
+    potIn.value = p.ref;
+    potMsg(p.ref + ': ' + p.plant + (p.variety ? ', ' + p.variety : '') + (why ? ' (' + why + ')' : ''), 'good');
+  }
+  function fillVarieties(sel) { varC.setOptions(varietyComboOpts(plantC.value, true), sel || ''); onVar(true); }
+  function onVar(quiet) {
+    var v = S.vm[varC.value];
+    $('#newVar').hidden = varC.value !== '__new';
+    if (varC.value === '__new') { $('#nvName').focus(); return; }
+    if (v) {
+      colPick.set(varColours(v));
+      if (!quiet && !potIn.value.trim()) {
+        var ps = potsOfVariety(v.id);
+        if (ps.length === 1) setPot(ps[0], 'the only pot with this variety; clear it if not right');
+      }
+    }
     refreshBloom();
   }
   function firstDate() { return A.files.length ? A.files[0].date : today(); }
   function refreshBloom() {
     var st = stage(), box = $('#bloomBox'), cnt = $('#countBox');
-    var flowerStage = FLOWER_STAGES.indexOf(st) >= 0;
+    var flowerStage = isFlowerStage(st);
     cnt.hidden = archive() || !curPot || !flowerStage;
     if (!cnt.hidden) $('#aCount').checked = st === 'Day 1';
-    if (archive() || !flowerStage || !plantSel.value) { box.hidden = true; return; }
+    if (archive() || !flowerStage || !plantC.value) { box.hidden = true; return; }
     box.hidden = false;
     var sel = $('#aBloom'), token = ++bloomToken;
     sel.innerHTML = '<option value="new">New flower</option>';
-    var q = { potUid: curPot ? curPot.uid : '', varietyId: varSel.value && varSel.value !== '__new' ? varSel.value : '', plantId: plantSel.value, date: firstDate() };
+    var q = { potUid: curPot ? curPot.uid : '', varietyId: varC.value && varC.value !== '__new' ? varC.value : '', plantId: plantC.value, date: firstDate() };
     api('getOpenBlooms', S.pin, q).then(function (list) {
       if (token !== bloomToken) return;
       sel.innerHTML = '<option value="new">New flower</option>' + list.map(function (x) {
@@ -857,7 +998,7 @@ function bindAdd(pre, pot) {
       return '<li data-k="' + f.k + '"><img src="' + f.url + '" alt=""><div class="fm">' +
         '<label class="sm">Date<input type="date" data-f="date" value="' + esc(f.date) + '"></label>' +
         '<label class="sm">Time<input type="time" data-f="time" value="' + esc(f.time) + '"></label>' +
-        '<span class="st ' + (f.status === 'done' ? 'done' : f.status === 'error' ? 'err' : '') + '" data-st>' + esc(f.msg || '') + '</span></div>' +
+        '<span class="st ' + (f.status === 'done' ? 'done' : f.status === 'error' ? 'err' : '') + '">' + esc(f.msg || '') + '</span></div>' +
         '<button type="button" class="icon-btn" data-rm="' + f.k + '" aria-label="Remove this photo">' + icon('close') + '</button></li>';
     }).join('');
   }
@@ -890,73 +1031,114 @@ function bindAdd(pre, pot) {
     var f = A.files.filter(function (x) { return x.k === +li.dataset.k; })[0]; if (f) f[fld] = e.target.value;
     if (fld === 'date') refreshBloom();
   });
+
+  // pot ref: existing pot fills the form; a new ref offers to create the pot here
   potIn.addEventListener('change', function () {
     var v = potIn.value.trim();
-    if (!v) { curPot = null; potMsg('Optional. Fills plant, variety and colour.'); refreshBloom(); return; }
+    $('#newPotBox').hidden = true;
+    if (!v) { curPot = null; potMsg('Optional. Fills plant, variety and colours.'); refreshBloom(); return; }
     var p = findPot(v);
-    if (!p) { curPot = null; potMsg('No active pot "' + v + '". Check the ref, or add the pot in Pots.', 'bad'); refreshBloom(); return; }
-    curPot = p; potIn.value = p.ref; plantSel.value = p.plantId;
-    fillVarieties(p.varietyId);
-    potMsg(p.ref + ': ' + p.plant + (p.variety ? ', ' + p.variety : ''), 'good');
+    if (p) {
+      plantC.value = p.plantId; fillVarieties(p.varietyId); setPot(p); refreshBloom(); return;
+    }
+    curPot = null; refreshBloom();
+    var r = parseRef(v), code = r && (S.boot.potCodes || []).filter(function (c) { return c.code === r.code; })[0];
+    if (!r) { potMsg('"' + v + '" is not a pot ref. Use letters then a number, like T037.', 'bad'); return; }
+    if (!code) { potMsg('There is no pot code "' + r.code + '". Add it in Masters → Pot codes first.', 'bad'); return; }
+    var ref = r.code + String(r.num).padStart(+code.digits || String(v).replace(/^[A-Za-z]+/, '').length || 3, '0');
+    potIn.value = ref;
+    potMsg(ref + ' is a new ' + code.type.toLowerCase() + '.', 'bad');
+    $('#newPotText').textContent = 'Create pot ' + ref + ' (' + code.type + ')' + (plantC.value ? ' for ' + plantName(plantC.value) + (S.vm[varC.value] ? ', ' + varLabel(S.vm[varC.value]) : '') : '') + '?';
+    $('#npCreate').textContent = 'Create pot ' + ref;
+    $('#newPotBox').hidden = false;
   });
-  plantSel.addEventListener('change', function () {
-    if (curPot && curPot.plantId !== plantSel.value) { curPot = null; potIn.value = ''; potMsg('Pot cleared because the plant changed.'); }
+  $('#npCreate').addEventListener('click', function () {
+    var ref = potIn.value.trim().toUpperCase();
+    if (!plantC.value) { toast('Pick the plant first, then tap Create pot.', 'err'); plantC.focus(); return; }
+    var vid = varC.value && varC.value !== '__new' ? varC.value : '';
+    var btn = $('#npCreate'); btn.disabled = true;
+    var data = { ref: ref, plantId: plantC.value, varietyId: vid, area: $('#npArea').value, size: $('#npSize').value, potted: today(), fish: false, family: true };
+    api('savePot', S.pin, data).then(function (res) {
+      var v = S.vm[vid];
+      var np = { uid: res.uid, ref: res.ref, area: data.area, plantId: data.plantId, plant: plantName(data.plantId), varietyId: vid, variety: v ? varLabel(v) : '',
+        size: data.size, type: '', mix: '', potted: data.potted, status: 'Active', fish: 'No', lastFed: '', lastRepot: '', notes: '' };
+      S.boot.pots.push(np); saveBoot(S.boot);
+      $('#potRefs').insertAdjacentHTML('beforeend', '<option value="' + esc(np.ref) + '">' + esc(np.plant) + '</option>');
+      setPot(np, 'new pot created'); refreshBloom();
+      toast('Pot ' + res.ref + ' created.');
+    }).catch(function (err) { toast(err.message, 'err'); }).then(function () { btn.disabled = false; });
+  });
+  plantC.onChange(function () {
+    if (curPot && curPot.plantId !== plantC.value) { curPot = null; potIn.value = ''; potMsg('Pot cleared because the plant changed.'); }
     fillVarieties('');
   });
-  varSel.addEventListener('change', onVar);
+  varC.onChange(function () { onVar(false); });
+  $('#nvName').addEventListener('input', function () {
+    var t = $('#nvName').value.trim().toLowerCase(), m = $('#nvMsg');
+    var hit = S.boot.varieties.filter(function (v) { return v.plantId === plantC.value && t && (v.name.toLowerCase() === t || String(v.trade).toLowerCase() === t); })[0];
+    m.innerHTML = hit ? esc(varLabel(hit)) + ' already exists. <button type="button" class="linkbtn" id="nvUse">Use it</button>' : '';
+    var use = $('#nvUse'); if (use) use.addEventListener('click', function () { varC.value = hit.id; onVar(false); });
+  });
   $$('input[name=stage]').forEach(function (r) { r.addEventListener('change', refreshBloom); });
   $('#aArchive').addEventListener('change', refreshBloom);
 
   fillVarieties(pre.variety || (pot && pot.varietyId) || '');
-  if (pot) potMsg(pot.ref + ': ' + pot.plant + (pot.variety ? ', ' + pot.variety : ''), 'good');
+  if (pot) setPot(pot);
 
   $('#addForm').addEventListener('submit', function (e) {
     e.preventDefault();
     var todo = A.files.filter(function (f) { return f.status !== 'done'; });
     if (!todo.length) { toast('Add at least one photo first.', 'err'); return; }
-    if (!plantSel.value) { toast('Pick the plant.', 'err'); plantSel.focus(); return; }
+    if (!plantC.value) { toast('Pick the plant.', 'err'); plantC.focus(); return; }
+    if (potIn.value.trim() && !curPot) { toast('Create the new pot first, or clear the pot ref.', 'err'); return; }
     var btn = $('#aSave'); btn.disabled = true;
-    var st = stage(), arch = archive();
+    var st = stage(), arch = archive(), pid = plantC.value;
     var bloom = !arch && !$('#bloomBox').hidden ? $('#aBloom').value : '';
     var count = !arch && !$('#countBox').hidden && $('#aCount').checked && !!curPot;
     var ok = 0, bad = 0;
-    var start = Promise.resolve(varSel.value);
-    if (varSel.value === '__new') {
+    var start = Promise.resolve(varC.value);
+    if (varC.value === '__new') {
       var name = $('#nvName').value.trim();
       if (!name) { btn.disabled = false; toast('Type the new variety name.', 'err'); $('#nvName').focus(); return; }
       btn.textContent = 'Saving variety…';
-      var nv = { plantId: plantSel.value, name: name, trade: $('#nvTrade').value.trim(), colour: colSel.value, petal: $('#nvPetal').value };
+      var nc = colPick.get();
+      var nv = { plantId: pid, name: name, trade: $('#nvTrade').value.trim(), colours: nc, colour: nc[0] || '', colour2: nc.slice(1).join(', '), petal: $('#nvPetal').value };
       start = api('saveVariety', S.pin, nv).then(function (id) {
-        nv.id = id; if (!S.vm[id]) { S.boot.varieties.push(nv); S.vm[id] = nv; }
+        nv.id = id; nv.photo = ''; if (!S.vm[id]) { S.boot.varieties.push(nv); S.vm[id] = nv; }
         fillVarieties(id); return id;
       });
     }
     start.then(function (varietyId) {
-      var chain = Promise.resolve();
-      todo.forEach(function (f, idx) {
-        chain = chain.then(function () {
-          f.msg = 'Uploading ' + (idx + 1) + ' of ' + todo.length + '…'; f.status = ''; drawFiles();
-          btn.textContent = 'Saving ' + (idx + 1) + ' of ' + todo.length + '…';
-          return resizeToJpeg(f.file).then(function (b64) {
-            return api('savePhoto', S.pin, {
-              date: f.date, time: f.time, potUid: curPot ? curPot.uid : '', potNo: curPot ? curPot.ref : '',
-              plantId: plantSel.value, varietyId: varietyId || '', stage: st, colour: colSel.value,
-              remark: $('#aRemark').value.trim(), bloom: bloom, archive: arch, countFlower: count,
-              family: $('#aFamily').checked, gallery: $('#aGallery').checked, source: f.source
-            }, b64);
-          }).then(function (res) {
-            if (bloom === 'new' && res.bloom) {
-              bloom = res.bloom;
-              var sel = $('#aBloom'); if (sel) { sel.insertAdjacentHTML('beforeend', '<option value="' + esc(res.bloom) + '">' + esc(res.bloom + ': ' + (st || 'photo') + ' on ' + fmtDate(f.date)) + '</option>'); sel.value = res.bloom; }
-            }
-            count = false; f.status = 'done'; f.msg = 'Saved'; ok++;
-            S.boot.photos.unshift({ date: f.date, time: f.time, potUid: curPot ? curPot.uid : '', potNo: curPot ? curPot.ref : '', plantId: plantSel.value,
-              varietyId: varietyId || '', stage: st, colour: colSel.value, remark: $('#aRemark').value.trim(), bloom: res.bloom, fileId: res.fileId, archive: arch, gallery: $('#aGallery').checked });
-          }).catch(function (err) { f.status = 'error'; f.msg = 'Not saved: ' + err.message; bad++; }).then(drawFiles);
+      var v = S.vm[varietyId];
+      var base = { potUid: curPot ? curPot.uid : '', potNo: curPot ? curPot.ref : '', plantId: pid, plantName: plantName(pid),
+        varietyId: varietyId || '', varietyFolder: v ? varietyId + ' ' + (v.trade || v.name) : 'General', stage: st, colour: colPick.get(),
+        remark: $('#aRemark').value.trim(), archive: arch, family: $('#aFamily').checked, gallery: $('#aGallery').checked };
+      var n = todo.length, started = 0;
+      function one(f, first) {
+        f.msg = 'Uploading…'; f.status = ''; drawFiles();
+        return resizeToJpeg(f.file, 1600, 0.8).then(function (b64) {
+          var meta = Object.assign({}, base, { date: f.date, time: f.time, source: f.source, bloom: bloom, countFlower: first && count });
+          return api('savePhoto', S.pin, meta, b64);
+        }).then(function (res) {
+          if (bloom === 'new' && res.bloom) {
+            bloom = res.bloom;
+            var sel = $('#aBloom'); if (sel) { sel.insertAdjacentHTML('beforeend', '<option value="' + esc(res.bloom) + '">' + esc(res.bloom + ': ' + (st || 'photo') + ' on ' + fmtDate(f.date)) + '</option>'); sel.value = res.bloom; }
+          }
+          if (first) count = false;
+          f.status = 'done'; f.msg = 'Saved'; ok++;
+          S.boot.photos.unshift(Object.assign({}, base, { date: f.date, time: f.time, colour: base.colour.join(', '), bloom: res.bloom, fileId: res.fileId }));
+        }).catch(function (err) { f.status = 'error'; f.msg = 'Not saved: ' + err.message; bad++; }).then(function () {
+          drawFiles(); btn.textContent = 'Saved ' + (ok + bad) + ' of ' + n + '…';
         });
+      }
+      // first photo alone (it may start a new flower ID), then up to 3 at a time
+      return one(todo[0], true).then(function () {
+        var rest = todo.slice(1), i = 0;
+        function worker() { if (i >= rest.length) return Promise.resolve(); var f = rest[i++]; return one(f, false).then(worker); }
+        return Promise.all([worker(), worker(), worker()]);
       });
-      return chain;
     }).then(function () {
+      saveBoot(S.boot);
       if (bad) toast(ok + ' saved, ' + bad + ' not saved. Tap Save photos again to retry.', 'err');
       else {
         toast(ok + (ok === 1 ? ' photo saved.' : ' photos saved.'));
@@ -1075,8 +1257,7 @@ function viewPots() {
       (codes.length ? '<form id="pForm" class="form"><div class="f2">' +
         '<div class="field"><label for="pCode">Pot type</label><select id="pCode">' + codes.map(function (c) { return '<option value="' + esc(c.code) + '">' + esc(c.code + ' – ' + c.type) + '</option>'; }).join('') + '</select></div>' +
         '<div class="field"><label for="pRef">Pot ref</label><input id="pRef" autocomplete="off" autocapitalize="characters"><p class="hint" id="pRefMsg"></p></div>' +
-        '<div class="field"><label for="pPlant">Plant</label><select id="pPlant">' + plantOptions('') + '</select></div>' +
-        '<div class="field"><label for="pVar">Variety</label><select id="pVar"><option value="">Pick a plant first</option></select></div>' +
+        comboHtml('pPlant', 'Plant', 'Type: lotus, sampangi…') + comboHtml('pVar', 'Variety', 'Type a variety name') +
         '<div class="field"><label for="pArea">Area</label><select id="pArea">' + areaOptions('') + '</select></div>' +
         '<div class="field"><label for="pSize">Pot size (inch)</label><input id="pSize" type="number" inputmode="decimal" min="1"></div>' +
         '<div class="field"><label for="pDate">Potted on</label><input id="pDate" type="date" value="' + today() + '"></div></div>' +
@@ -1121,15 +1302,17 @@ function viewPots() {
     m.textContent = used ? v + ' is already used by an active pot.' : (v ? 'Free to use.' : ''); m.className = 'hint ' + (used ? 'bad' : 'good');
   }
   $('#pCode').addEventListener('change', suggest); $('#pRef').addEventListener('input', checkRef);
-  $('#pPlant').addEventListener('change', function () {
-    $('#pVar').innerHTML = varietyOptions($('#pPlant').value, '', false);
-    var pl = S.pm[$('#pPlant').value]; if (pl && !$('#pMix').value) $('#pMix').value = pl.mix || '';
+  var pPlantC = Combo('pPlant', plantComboOpts(), ''), pVarC = Combo('pVar', varietyComboOpts('', false), '');
+  pPlantC.onChange(function () {
+    pVarC.setOptions(varietyComboOpts(pPlantC.value, false), '');
+    var pl = S.pm[pPlantC.value]; if (pl && !$('#pMix').value) $('#pMix').value = pl.mix || '';
   });
   suggest();
   form.addEventListener('submit', function (e) {
     e.preventDefault();
+    if (!pPlantC.value) { toast('Pick the plant.', 'err'); pPlantC.focus(); return; }
     var btn = $('button[type=submit]', form); btn.disabled = true;
-    var data = { ref: $('#pRef').value, plantId: $('#pPlant').value, varietyId: $('#pVar').value, area: $('#pArea').value, size: $('#pSize').value,
+    var data = { ref: $('#pRef').value, plantId: pPlantC.value, varietyId: pVarC.value, area: $('#pArea').value, size: $('#pSize').value,
       potted: $('#pDate').value, mix: $('#pMix').value.trim(), fish: $('#pFish').checked, family: $('#pFamily').checked, notes: $('#pNotes').value.trim() };
     api('savePot', S.pin, data).then(function (res) {
       toast('Pot ' + res.ref + ' added.');
@@ -1276,6 +1459,333 @@ function viewDash() {
     '<dl class="stats">' + stat(live.length, 'new photos this month') + stat(month.length - live.length, 'old photos added this month') +
     stat(b.photoCount, 'photos in total') + stat(money(spent) || '₹0', 'spent this month') + stat(low.length, 'inputs running low') + '</dl>' +
     (low.length ? '<section class="sec"><h2>Running low</h2><div class="chips">' + low.map(function (i) { return '<span class="badge b-err">' + esc(i.name) + '</span>'; }).join('') + '</div></section>' : '');
+}
+
+/* ================= gallery: one sliding row per plant ================= */
+function galSpeed() { var v = 3; try { v = +localStorage.getItem('g109a_speed') || 3; } catch (e) {} return Math.min(10, Math.max(1, v)); }
+function viewGallery(arg) {
+  var groups = [];
+  S.boot.plants.forEach(function (p) { if (p.group && groups.indexOf(p.group) < 0) groups.push(p.group); });
+  var group = decodeURIComponent(parseArgs(arg).group || '');
+  var speed = galSpeed(), paused = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  app.innerHTML = '<div class="page-h"><h1>Gallery</h1><p class="muted">One row for each plant. Rows slide by themselves. Tap a photo to see it big.</p></div>' +
+    '<div class="gl-bar"><div class="field gl-grp"><label for="glGroup">Group</label><select id="glGroup"><option value="">All groups</option>' +
+      groups.map(function (g) { return '<option' + (g === group ? ' selected' : '') + '>' + esc(g) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="gl-ctl" role="group" aria-label="Slideshow controls">' +
+      '<button type="button" data-gl="back" aria-label="Back one photo">' + icon('back') + '</button>' +
+      '<button type="button" data-gl="pause" aria-label="Pause">' + icon('pause') + '</button>' +
+      '<button type="button" data-gl="next" aria-label="Forward one photo">' + icon('next') + '</button>' +
+      '<span class="gl-sep" aria-hidden="true"></span>' +
+      '<button type="button" data-gl="slower" aria-label="Slower">Slower</button>' +
+      '<span class="gl-speed" id="glSpeed" aria-live="polite">' + speed + ' s</span>' +
+      '<button type="button" data-gl="faster" aria-label="Faster">Faster</button></div></div>' +
+    '<div id="glRows"><p class="muted">Loading photos…</p></div><div id="glMore" style="margin:18px 0"></div>';
+
+  var rows = [], shown = 0, visible = {}, reduce = paused;
+  function setPaused(v) {
+    paused = v; var b = $('[data-gl="pause"]');
+    if (b) { b.innerHTML = icon(v ? 'play' : 'pause'); b.setAttribute('aria-label', v ? 'Play' : 'Pause'); }
+  }
+  function step(strip, dir) {
+    var card = strip.querySelector('.gl-card'); if (!card) return;
+    var w = card.getBoundingClientRect().width + 10, max = strip.scrollWidth - strip.clientWidth;
+    if (max <= 2) return;
+    var next = strip.scrollLeft + dir * w;
+    if (next > max + 2) next = 0; else if (next < -2) next = max;
+    if (strip.scrollTo) strip.scrollTo({ left: next, behavior: reduce ? 'auto' : 'smooth' }); else strip.scrollLeft = next;
+  }
+  function stepAll(dir) {
+    $$('.gl-row', app).forEach(function (row, k) {
+      if (!visible[row.dataset.row] || row.dataset.hold === '1') return;
+      setTimeout(function () { step($('.gl-strip', row), dir); }, k % 5 * 180);
+    });
+  }
+  function restart() {
+    clearInterval(S.timer);
+    S.timer = setInterval(function () { if (!paused && !document.hidden) stepAll(1); }, speed * 1000);
+    $('#glSpeed').textContent = speed + ' s';
+    try { localStorage.setItem('g109a_speed', String(speed)); } catch (e) {}
+  }
+  function rowHtml(r, i) {
+    var p = S.pm[r.plantId] || {};
+    S.lists['gl' + i] = r.photos;
+    return '<section class="gl-row" data-row="' + i + '"><div class="gl-h"><a href="#/plant/' + esc(r.plantId) + '"><h2 class="gl-t">' + esc(p.en || r.plantId) + '</h2></a>' +
+      '<span class="muted sm">' + r.total + (r.total === 1 ? ' photo' : ' photos') + '</span></div>' +
+      '<div class="gl-strip" tabindex="0" aria-label="' + esc((p.en || '') + ' photos') + '">' + r.photos.map(function (ph, k) {
+        var label = varLabel(S.vm[ph.varietyId]) || ph.stage || fmtDate(ph.date);
+        return '<button type="button" class="gl-card" data-act="lb" data-lb="gl' + i + '" data-i="' + k + '" aria-label="Open photo: ' + esc(photoAlt(ph) || p.en) + '">' +
+          '<img src="' + imgUrl(ph.fileId, 400) + '" alt="" loading="lazy"><span class="gl-cap">' + esc(label) + '</span></button>';
+      }).join('') + '</div></section>';
+  }
+  function more() {
+    var next = rows.slice(shown, shown + 5);
+    if (!next.length) return;
+    $('#glRows').insertAdjacentHTML('beforeend', next.map(function (r, k) { return rowHtml(r, shown + k); }).join(''));
+    next.forEach(function (_, k) {
+      var row = $('[data-row="' + (shown + k) + '"]');
+      if (S.io) S.io.observe(row); else visible[row.dataset.row] = true;
+      var strip = $('.gl-strip', row);
+      strip.addEventListener('pointerdown', function () { row.dataset.hold = '1'; clearTimeout(row._t); row._t = setTimeout(function () { row.dataset.hold = ''; }, 8000); });
+    });
+    shown += next.length;
+    $('#glMore').innerHTML = shown < rows.length ? '<button type="button" class="btn" id="glMoreBtn">Show more plants (' + (rows.length - shown) + ' left)</button>' : '';
+    var mb = $('#glMoreBtn'); if (mb) { mb.addEventListener('click', more); if (S.io) S.io.observe(mb); }
+  }
+  if ('IntersectionObserver' in window) {
+    S.io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.target.id === 'glMoreBtn') { if (en.isIntersecting) more(); return; }
+        visible[en.target.dataset.row] = en.isIntersecting;
+      });
+    }, { rootMargin: '120px 0px' });
+  }
+  $('.gl-ctl').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-gl]'); if (!b) return;
+    var a = b.dataset.gl;
+    if (a === 'pause') setPaused(!paused);
+    else if (a === 'next' || a === 'back') stepAll(a === 'next' ? 1 : -1);
+    else if (a === 'slower') { speed = Math.min(10, speed + 1); restart(); }
+    else if (a === 'faster') { speed = Math.max(1, speed - 1); restart(); }
+  });
+  $('#glGroup').addEventListener('change', function () {
+    var g = $('#glGroup').value;
+    location.hash = '#/gallery' + (g ? '/group=' + encodeURIComponent(g) : '');
+  });
+  setPaused(paused);
+  api('getGallery', S.pin, group, S.preview).then(function (data) {
+    if (route().page !== 'gallery') return;
+    rows = data;
+    $('#glRows').innerHTML = rows.length ? '' : '<div class="empty">No photos for ' + esc(group || 'any plant') + ' yet.' + (isOwner() ? ' Add photos and they will show here.' : '') + '</div>';
+    more(); restart();
+  }).catch(function (err) { $('#glRows').innerHTML = '<p class="hint bad">Photos did not load: ' + esc(err.message) + '</p>'; });
+}
+
+/* ================= owner: photos list ================= */
+function viewPhotos(arg) {
+  var pre = parseArgs(arg), list = S.boot.photos;
+  var ids = []; list.forEach(function (p) { if (ids.indexOf(p.plantId) < 0) ids.push(p.plantId); });
+  app.innerHTML = '<div class="page-h"><h1>My photos</h1><p class="muted">Your latest ' + list.length + ' photos. Tap one to change its details or delete it.</p></div>' +
+    '<div class="f2" style="max-width:760px"><div class="field"><label for="phP">Plant</label><select id="phP"><option value="">All plants</option>' +
+      ids.map(function (id) { return '<option value="' + esc(id) + '"' + (id === pre.plant ? ' selected' : '') + '>' + esc(plantName(id) || id) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="field"><label for="phK">Show</label><select id="phK"><option value="">All photos</option><option value="live">New photos only</option><option value="old">Old photos (archive) only</option><option value="nostage">Photos without a stage</option></select></div></div>' +
+    '<p class="muted sm" id="phCount" role="status" style="margin:14px 0 10px"></p><div class="grid g-photos" id="phGrid"></div>';
+  function draw() {
+    var pid = $('#phP').value, k = $('#phK').value;
+    var rows = list.filter(function (p) {
+      return p.fileId && (!pid || p.plantId === pid) && (k !== 'live' || !p.archive) && (k !== 'old' || p.archive) && (k !== 'nostage' || !p.stage);
+    });
+    $('#phGrid').innerHTML = rows.map(function (p) {
+      return '<a class="ptile" href="#/photo/' + encodeURIComponent(p.fileId) + '" aria-label="Edit photo: ' + esc(photoAlt(p) || 'garden') + '">' +
+        '<img src="' + imgUrl(p.fileId, 400) + '" alt="" loading="lazy"><span class="ptag">' + esc([plantName(p.plantId), p.stage, fmtDate(p.date)].filter(Boolean).join(', ')) + '</span>' +
+        (p.archive ? '<span class="ptag2">Old</span>' : '') + '</a>';
+    }).join('') || '<div class="empty">No photos here.</div>';
+    $('#phCount').textContent = rows.length + (rows.length === 1 ? ' photo' : ' photos');
+  }
+  $('#phP').addEventListener('change', draw); $('#phK').addEventListener('change', draw);
+  draw();
+}
+
+/* ================= owner: edit one photo ================= */
+function viewPhoto(fileId) {
+  app.innerHTML = '<a class="back" href="#/photos">' + icon('back') + 'My photos</a><div class="page-h"><h1>Edit photo</h1></div><p class="muted" id="peLoad">Loading…</p><div id="peBody"></div>';
+  api('getPhotos', S.pin, { fileId: fileId }, false).then(function (list) {
+    if (route().arg !== fileId) return;
+    var p = list[0];
+    if (!p) { $('#peLoad').textContent = 'This photo was not found. It may have been deleted.'; return; }
+    $('#peLoad').remove();
+    var b = S.boot, pot = p.potUid ? (b.pots || []).filter(function (x) { return x.uid === p.potUid; })[0] : null;
+    var stages = ((b.lists && b.lists['Photo stages']) || FLOWER_STAGES).filter(function (x) { return hiddenOf('Photo stages').indexOf(x) < 0 || x === p.stage; });
+    if (p.stage && stages.indexOf(p.stage) < 0) stages.push(p.stage);
+    var cols = splitColours(p.colour);
+    $('#peBody').innerHTML =
+      '<div class="pe-wrap"><button type="button" class="pe-img" data-act="lb" data-lb="pe" data-i="0" aria-label="See photo big"><img src="' + imgUrl(p.fileId, 900) + '" alt="' + esc(photoAlt(p)) + '"></button>' +
+      '<form id="peForm" class="form" novalidate>' +
+        '<fieldset class="fs"><legend>When</legend><div class="f2"><div class="field"><label for="peDate">Date</label><input type="date" id="peDate" value="' + esc(p.date) + '"></div>' +
+        '<div class="field"><label for="peTime">Time</label><input type="time" id="peTime" value="' + esc(p.time) + '"></div></div></fieldset>' +
+        '<fieldset class="fs"><legend>Plant</legend><div class="f2">' +
+          '<div class="field"><label for="pePot">Pot ref</label><input id="pePot" list="potRefs" autocomplete="off" autocapitalize="characters" value="' + esc(pot ? pot.ref : '') + '" placeholder="e.g. T036">' + potDatalist('potRefs') + '<p class="hint" id="pePotMsg">Leave empty if not from a pot.</p></div>' +
+          comboHtml('pePlant', 'Plant') + comboHtml('peVar', 'Variety') + '</div>' +
+          '<div class="field"><span class="lbl">Colours</span>' + colourPicker('peColours', cols) + '</div></fieldset>' +
+        '<fieldset class="fs"><legend>Stage</legend><div class="chips stage" role="radiogroup" aria-label="Stage">' + stages.map(function (x) {
+          return '<label class="chip-r"><input type="radio" name="peStage" value="' + esc(x) + '"' + (x === p.stage ? ' checked' : '') + '><span>' + esc(x) + '</span></label>';
+        }).join('') + '<label class="chip-r"><input type="radio" name="peStage" value=""' + (!p.stage ? ' checked' : '') + '><span>No stage</span></label></div></fieldset>' +
+        '<fieldset class="fs"><legend>Details</legend>' +
+          '<div class="field"><label for="peRemark">Remark</label><textarea id="peRemark" rows="2">' + esc(p.remark) + '</textarea></div>' +
+          '<div class="field"><label for="peBloom">Flower ID (links photos of one flower)</label><input id="peBloom" autocomplete="off" autocapitalize="characters" value="' + esc(p.bloom) + '" placeholder="e.g. BL0003"><p class="hint">Leave empty if this is not part of a flower series.</p></div>' +
+          '<label class="sw"><input type="checkbox" id="peArchive"' + (p.archive ? ' checked' : '') + '><span><strong>Old photo (archive)</strong><br><span class="hint">Not counted for flowering. Turning this on also removes its flower count.</span></span></label>' +
+          '<label class="sw"><input type="checkbox" id="peFamily"' + (p.family === false ? '' : ' checked') + '><span>Show to family</span></label>' +
+          '<label class="sw"><input type="checkbox" id="peGallery"' + (p.gallery ? ' checked' : '') + '><span>Show in gallery</span></label>' +
+        '</fieldset>' +
+        '<div class="actions row gap"><button class="btn btn-primary lg" type="submit">Save changes</button><button class="btn lg pe-del" type="button" id="peDel">Delete photo</button></div>' +
+      '</form></div>';
+    S.lists.pe = [p];
+    var pick = bindColourPicker('peColours'), curPot = pot;
+    var plantC = Combo('pePlant', plantComboOpts(), p.plantId), varC = Combo('peVar', varietyComboOpts(p.plantId, false), p.varietyId);
+    plantC.onChange(function () {
+      varC.setOptions(varietyComboOpts(plantC.value, false), '');
+      if (curPot && curPot.plantId !== plantC.value) { curPot = null; $('#pePot').value = ''; }
+    });
+    varC.onChange(function () { var v = S.vm[varC.value]; if (v) pick.set(varColours(v)); });
+    $('#pePot').addEventListener('change', function () {
+      var v = $('#pePot').value.trim(), m = $('#pePotMsg');
+      if (!v) { curPot = null; m.textContent = 'Leave empty if not from a pot.'; m.className = 'hint'; return; }
+      var f = findPot(v);
+      if (!f) { curPot = null; m.textContent = 'No active pot "' + v + '".'; m.className = 'hint bad'; return; }
+      curPot = f; $('#pePot').value = f.ref; plantC.value = f.plantId; varC.setOptions(varietyComboOpts(f.plantId, false), f.varietyId);
+      m.textContent = f.plant + (f.variety ? ', ' + f.variety : ''); m.className = 'hint good';
+    });
+    $('#peForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      if ($('#pePot').value.trim() && !curPot) { toast('Fix the pot ref, or leave it empty.', 'err'); return; }
+      if (!plantC.value) { toast('Pick the plant.', 'err'); plantC.focus(); return; }
+      var st = $('input[name=peStage]:checked');
+      var ch = { date: $('#peDate').value, time: $('#peTime').value, potUid: curPot ? curPot.uid : '', plantId: plantC.value, varietyId: varC.value,
+        stage: st ? st.value : '', colour: pick.get(), remark: $('#peRemark').value.trim(), bloom: $('#peBloom').value.trim().toUpperCase(),
+        archive: $('#peArchive').checked, family: $('#peFamily').checked, gallery: $('#peGallery').checked };
+      var btn = $('button[type=submit]', $('#peForm')); btn.disabled = true;
+      api('updatePhoto', S.pin, fileId, ch).then(function () {
+        S.boot.photos.forEach(function (x) {
+          if (x.fileId !== fileId) return;
+          Object.keys(ch).forEach(function (k) { x[k] = k === 'colour' ? ch.colour.join(', ') : ch[k]; });
+          x.potNo = curPot ? curPot.ref : '';
+        });
+        saveBoot(S.boot);
+        toast('Changes saved.');
+      }).catch(function (err) { toast(err.message, 'err'); }).then(function () { btn.disabled = false; });
+    });
+    $('#peDel').addEventListener('click', function () {
+      if (!window.confirm('Delete this photo? It goes to Google Drive trash, where you can restore it for 30 days.')) return;
+      api('deletePhoto', S.pin, fileId).then(function () {
+        S.boot.photos = S.boot.photos.filter(function (x) { return x.fileId !== fileId; });
+        S.boot.photoCount = Math.max(0, (S.boot.photoCount || 1) - 1);
+        saveBoot(S.boot);
+        toast('Photo deleted.');
+        location.hash = '#/photos';
+      }).catch(function (err) { toast(err.message, 'err'); });
+    });
+  }).catch(function (err) { $('#peLoad').textContent = 'Could not load the photo: ' + err.message; });
+}
+
+/* ================= owner: masters ================= */
+var MASTER_LISTS = [['Colours', 'Colours'], ['Petal types', 'Petal types'], ['Photo stages', 'Photo stages'], ['Activities', 'Work done (activities)'],
+  ['Fish events', 'Fish events'], ['Purchase categories', 'Purchase categories'], ['Found through', 'Found through (vendor source)'],
+  ['Vendor types', 'Vendor types'], ['Input categories', 'Input categories'], ['Plant groups', 'Plant groups']];
+var LOCKED_UI = { 'Activities': ['Feed', 'Repot'], 'Fish events': ['Died', 'Moved out', 'Gifted'], 'Photo stages': ['Bud', 'Bud opening', 'Day 1'] };
+var REC = {
+  potCode: { title: 'Pot codes', key: 'code', keyLabel: 'Code (1 or 2 letters)', list: function () { return S.boot.potCodes || []; },
+    label: function (r) { return r.code + ' – ' + r.type + (r.digits ? ' (' + r.digits + ' digits)' : ''); },
+    fields: [['type', 'Pot type'], ['digits', 'Number digits', 'number'], ['notes', 'Notes']] },
+  area: { title: 'Areas', key: 'id', auto: true, list: function () { return S.boot.areas || []; },
+    label: function (r) { return r.id + ' ' + r.name + (r.side ? ', ' + r.side : ''); },
+    fields: [['name', 'Area name'], ['side', 'Side / location'], ['sun', 'Sun hours (approx)', 'number'], ['size', 'Size (sq ft)', 'number'], ['notes', 'Notes']] },
+  unit: { title: 'Units', key: 'unit', keyLabel: 'Unit name', list: function () { return S.boot.units || []; },
+    label: function (r) { return r.unit + (r.grams !== '' ? ' = ' + r.grams + ' g or ml' : ''); },
+    fields: [['measures', 'Measures (weight, liquid or count)'], ['grams', 'Approx g or ml', 'number']] },
+  fish: { title: 'Fish types', key: 'id', auto: true, list: function () { return S.boot.fishTypes || []; },
+    label: function (r) { return r.name + (r.strain ? ' (' + r.strain + ')' : ''); },
+    fields: [['name', 'Fish name'], ['sci', 'Scientific name'], ['strain', 'Strain'], ['colour', 'Colour'], ['ta', 'Tamil name'], ['notes', 'Notes']] },
+  vendor: { title: 'Vendors', key: 'id', auto: true, list: function () { return S.boot.vendors || []; },
+    label: function (r) { return r.name + (r.city ? ', ' + r.city : ''); },
+    fields: [['name', 'Vendor name'], ['contact', 'Contact person'], ['mobile', 'Mobile', 'tel'], ['email', 'Email', 'email'], ['area', 'Area'], ['city', 'City'],
+      ['state', 'State'], ['web', 'Website', 'url'], ['found', 'Found through', 'list:Found through'], ['type', 'Vendor type', 'list:Vendor types'], ['notes', 'Notes']] }
+};
+function viewMasters() {
+  S.openM = S.openM || {};
+  var open = function (k) { return S.openM[k] ? ' open' : ''; };
+  app.innerHTML = '<div class="page-h"><h1>Masters</h1><p class="muted">Add or change the choices used in the app. Hidden items stay in old records but are not offered for new ones.</p></div>' +
+    '<h2 style="margin:6px 0 10px">Choice lists</h2>' + MASTER_LISTS.map(function (m) {
+      return '<details class="care" data-mk="L:' + esc(m[0]) + '"' + open('L:' + m[0]) + '><summary>' + esc(m[1]) + ' <span class="muted sm">' + ((S.boot.lists[m[0]] || []).length) + '</span></summary><div class="body">' + listEditor(m[0]) + '</div></details>';
+    }).join('') +
+    '<h2 style="margin:28px 0 10px">Records</h2>' + Object.keys(REC).map(function (k) {
+      return '<details class="care" data-mk="R:' + k + '"' + open('R:' + k) + '><summary>' + esc(REC[k].title) + ' <span class="muted sm">' + REC[k].list().length + '</span></summary><div class="body" id="rec_' + k + '">' + recEditor(k, null) + '</div></details>';
+    }).join('');
+  $$('details[data-mk]', app).forEach(function (d) { d.addEventListener('toggle', function () { S.openM[d.dataset.mk] = d.open; }); });
+  app.onclick = mastersClick;
+  app.onchange = function (e) {
+    var sw = e.target.closest('.ml-sw'); if (!sw) return;
+    var name = sw.closest('.ml-row').dataset.v;
+    api('setColourSwatch', S.pin, name, sw.value).then(function () {
+      S.boot.meta.swatches = S.boot.meta.swatches || {}; S.boot.meta.swatches[name] = sw.value; saveBoot(S.boot); toast('Swatch for ' + name + ' saved.');
+    }).catch(function (err) { toast(err.message, 'err'); });
+  };
+}
+function listEditor(name) {
+  var vals = S.boot.lists[name] || [], hid = hiddenOf(name), locked = LOCKED_UI[name] || [];
+  return '<div class="ml" data-list="' + esc(name) + '">' + vals.map(function (v) {
+    var isHid = hid.indexOf(v) >= 0, isLock = locked.indexOf(v) >= 0;
+    return '<div class="ml-row' + (isHid ? ' ml-hid' : '') + '" data-v="' + esc(v) + '">' +
+      (name === 'Colours' ? '<input type="color" class="ml-sw" value="' + hexOf(v) + '" aria-label="Swatch colour for ' + esc(v) + '">' : '') +
+      '<input class="ml-name" value="' + esc(v) + '" aria-label="Name"' + (isLock ? ' disabled title="Used by the app; cannot be renamed"' : '') + '>' +
+      (isLock ? '' : '<button type="button" class="btn sm" data-ml="rename">Rename</button>') +
+      '<button type="button" class="btn sm" data-ml="hide">' + (isHid ? 'Show again' : 'Hide') + '</button></div>';
+  }).join('') +
+    '<div class="ml-row"><input class="ml-new" placeholder="New ' + esc(name.toLowerCase().replace(/s$/, '')) + '" aria-label="New item name"><button type="button" class="btn sm btn-primary" data-ml="add">Add</button></div>' +
+    '<label class="sw sm"><input type="checkbox" class="ml-upd" checked><span>When renaming, also change old records</span></label></div>';
+}
+function recEditor(kind, editKey) {
+  var R = REC[kind], rows = R.list(), cur = editKey !== null && editKey !== undefined ? rows.filter(function (r) { return String(r[R.key]) === String(editKey); })[0] : null;
+  var isNew = editKey === '';
+  var list = '<ul class="rec-list">' + rows.map(function (r) {
+    return '<li><span>' + esc(R.label(r)) + '</span><button type="button" class="btn sm" data-rec="edit" data-kind="' + kind + '" data-key="' + esc(r[R.key]) + '">Edit</button></li>';
+  }).join('') + '</ul><button type="button" class="btn sm btn-primary" data-rec="new" data-kind="' + kind + '">' + icon('plus', 16) + 'Add new</button>';
+  if (!cur && !isNew) return list;
+  var val = function (k) { return cur ? cur[k] : ''; };
+  var keyField = R.auto ? '' : '<div class="field"><label for="rk_' + kind + '">' + esc(R.keyLabel) + '</label><input id="rk_' + kind + '" data-f="' + R.key + '" value="' + esc(val(R.key)) + '"' + (cur ? ' disabled' : '') + '></div>';
+  var fields = R.fields.map(function (f) {
+    var id = 'rf_' + kind + '_' + f[0], type = f[2] || 'text';
+    if (type.indexOf('list:') === 0) return '<div class="field"><label for="' + id + '">' + esc(f[1]) + '</label><select id="' + id + '" data-f="' + f[0] + '">' + listOptions(type.slice(5), val(f[0]), 'Not set') + '</select></div>';
+    return '<div class="field"><label for="' + id + '">' + esc(f[1]) + '</label><input id="' + id + '" data-f="' + f[0] + '" type="' + type + '"' + (type === 'number' ? ' inputmode="decimal" step="any"' : '') + ' value="' + esc(val(f[0])) + '"></div>';
+  }).join('');
+  return list + '<form class="form rec-form" data-kind="' + kind + '" data-new="' + (isNew ? '1' : '') + '" data-key="' + esc(cur ? cur[R.key] : '') + '" style="margin-top:14px">' +
+    '<h3>' + (isNew ? 'New' : 'Edit ' + esc(R.label(cur))) + '</h3><div class="f2">' + keyField + fields + '</div>' +
+    '<div class="row gap"><button class="btn btn-primary" type="submit">Save</button><button class="btn" type="button" data-rec="cancel" data-kind="' + kind + '">Cancel</button></div></form>';
+}
+function mastersClick(e) {
+  var b = e.target.closest('[data-ml],[data-rec]'); if (!b || route().page !== 'masters') return;
+  if (b.dataset.rec) {
+    var kind = b.dataset.kind, box = $('#rec_' + kind);
+    if (b.dataset.rec === 'edit') box.innerHTML = recEditor(kind, b.dataset.key);
+    else if (b.dataset.rec === 'new') box.innerHTML = recEditor(kind, '');
+    else box.innerHTML = recEditor(kind, null);
+    var form = $('.rec-form', box);
+    if (form) { var first = $('input:not([disabled]),select', form); if (first) first.focus(); form.addEventListener('submit', saveRec); }
+    return;
+  }
+  var wrap = b.closest('.ml'), list = wrap.dataset.list, row = b.closest('.ml-row'), act = b.dataset.ml;
+  var done = function (msg) { toast(msg); refreshBoot().then(function () { if (route().page === 'masters') render(); }); };
+  b.disabled = true;
+  var p;
+  if (act === 'add') {
+    var nv = $('.ml-new', wrap).value.trim();
+    if (!nv) { b.disabled = false; toast('Type a name first.', 'err'); return; }
+    p = api('saveListValue', S.pin, list, '', nv, false).then(function () { S.boot.lists[list] = (S.boot.lists[list] || []).concat([nv]); done(nv + ' added.'); });
+  } else if (act === 'rename') {
+    var ov = row.dataset.v, nn = $('.ml-name', row).value.trim(), upd = $('.ml-upd', wrap).checked;
+    if (!nn || nn === ov) { b.disabled = false; toast('Change the name in the box first, then tap Rename.', 'err'); return; }
+    p = api('saveListValue', S.pin, list, ov, nn, upd).then(function (res) {
+      S.boot.lists[list] = S.boot.lists[list].map(function (v) { return v === ov ? nn : v; });
+      done(ov + ' renamed to ' + nn + (upd ? '. ' + res.changed + ' old records changed.' : '.'));
+    });
+  } else if (act === 'hide') {
+    var v = row.dataset.v, hide = hiddenOf(list).indexOf(v) < 0;
+    p = api('hideListValue', S.pin, list, v, hide).then(function (h) {
+      S.boot.meta.hidden = S.boot.meta.hidden || {}; S.boot.meta.hidden[list] = h; saveBoot(S.boot);
+      toast(v + (hide ? ' hidden.' : ' shown again.')); render();
+    });
+  }
+  if (p) p.catch(function (err) { toast(err.message, 'err'); b.disabled = false; });
+}
+function saveRec(e) {
+  e.preventDefault();
+  var form = e.target, kind = form.dataset.kind, R = REC[kind], data = {};
+  $$('[data-f]', form).forEach(function (el) { data[el.dataset.f] = el.value; });
+  if (form.dataset.new) data._new = true; else data[R.key] = form.dataset.key;
+  var btn = $('button[type=submit]', form); btn.disabled = true;
+  api('saveMaster', S.pin, kind, data).then(function (id) {
+    toast(R.title + ': saved ' + id + '.');
+    S.openM['R:' + kind] = true;
+    return refreshBoot().then(function () { if (route().page === 'masters') render(); });
+  }).catch(function (err) { toast(err.message, 'err'); btn.disabled = false; });
 }
 
 /* ================= start ================= */
