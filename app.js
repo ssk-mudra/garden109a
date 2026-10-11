@@ -2693,25 +2693,33 @@ function viewCalendar(arg) {
     $('#calDay').innerHTML = '<section class="sec" style="margin-top:20px"><h2>' + esc(fmtDate(ds)) + ' · ' + list.length + (list.length === 1 ? ' photo' : ' photos') + '</h2>' + photoGrid('calday', list) + '</section>';
   }
   function drawYear() {
-    var y = F.year;
+    var y = F.year, nowM = +today().slice(5, 7) - 1, thisYear = +today().slice(0, 4) === y;
+    var cam = '<svg class="cam" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>';
     $('#calBody').innerHTML = '<div class="cal-nav"><button type="button" class="icon-btn" data-cy="-1" aria-label="Previous year">' + icon('back') + '</button><h2>' + y + '</h2>' +
       '<button type="button" class="icon-btn" data-cy="1" aria-label="Next year">' + icon('next') + '</button></div>' +
-      '<p class="muted sm">Flowers photographed each month (new photos only). Dotted boxes show the months the care guide expects flowers. Tap a box to see that month.</p><div id="yearT"><p class="muted">Loading…</p></div>' +
-      '<ul class="legend" style="margin-top:10px"><li><i class="yc-l1"></i>1–2 flowers</li><li><i class="yc-l2"></i>3–5</li><li><i class="yc-l3"></i>6 or more</li><li><i class="yc-exp"></i>Expected (care guide)</li>' +
-      '<li><b style="padding:0 4px">·</b>Photos, but none with a flower stage</li></ul>' +
-      '<p class="muted sm" style="margin-top:6px">Only new photos with a flower stage (Bud, Day 1 …, Full bloom, Fading, Dried, Seeds) are counted. Old photos (archive) are left out.</p>';
+      '<div class="ylg" aria-label="How to read this">' +
+        '<span><span class="bar"></span>Flowering season (care guide)</span>' +
+        '<span><span class="fb s1">2</span><span class="fb s2">4</span><span class="fb s3">7</span>Flowers you photographed: bigger circle, more flowers</span>' +
+        '<span>' + cam + 'Photos without a flower stage</span></div>' +
+      '<div id="yearT"><p class="muted">Loading…</p></div>' +
+      '<p class="muted sm" style="margin-top:8px">Counts new photos with a flower stage (Bud, Day 1 …, Full bloom, Fading, Dried, Seeds). Old photos (archive) are left out. Tap any month to see its photos.</p>';
     api('getYearStats', S.pin, y, S.preview).then(function (st) {
       if (route().page !== 'calendar' || F.view !== 'year' || F.year !== y) return;
+      var total = function (id) { return st[id] ? st[id].flowers.reduce(function (s1, n) { return s1 + n; }, 0) : 0; };
       var plants = S.boot.plants.filter(function (p) { return (!F.group || p.group === F.group) && (!F.plant || p.id === F.plant) && (st[p.id] || isFlowering(p)); });
-      plants.sort(function (a1, b1) { var x = st[b1.id] ? st[b1.id].flowers.reduce(function (s1, n) { return s1 + n; }, 0) : 0, z = st[a1.id] ? st[a1.id].flowers.reduce(function (s1, n) { return s1 + n; }, 0) : 0; return x - z || a1.en.localeCompare(b1.en); });
-      $('#yearT').innerHTML = '<div class="tbl-wrap"><table class="yt"><thead><tr><th>Plant</th>' + MONTHS.map(function (m2) { return '<th>' + m2 + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      plants.sort(function (a1, b1) { return total(b1.id) - total(a1.id) || a1.en.localeCompare(b1.en); });
+      $('#yearT').innerHTML = '<div class="tbl-wrap ytw"><table class="yt2"><thead><tr><th class="pn">Plant</th>' + MONTHS.map(function (m2, i) {
+          return '<th' + (thisYear && i === nowM ? ' class="now"' : '') + '><span>' + m2 + '</span></th>';
+        }).join('') + '</tr></thead><tbody>' +
         plants.map(function (p) {
-          var se = seasonOf(p), row = st[p.id] || { flowers: new Array(12).fill(0), photos: new Array(12).fill(0) };
-          return '<tr><th scope="row"><a href="#/plant/' + esc(p.id) + '">' + esc(p.en) + '</a></th>' + MONTHS.map(function (m2, i) {
-            var n = row.flowers[i], ph = row.photos[i], exp = se.flower[i] && !se.rest[i];
-            var lv = n >= 6 ? 3 : n >= 3 ? 2 : n >= 1 ? 1 : 0;
-            return '<td><button type="button" class="yc' + (lv ? ' yc-l' + lv : '') + (exp ? ' yc-exp' : '') + '" data-ym="' + y + '-' + pad(i + 1) + '" data-p="' + esc(p.id) + '"' +
-              ' aria-label="' + esc(p.en) + ', ' + MONTH_FULL[i] + ': ' + n + ' flowers, ' + ph + ' photos' + (exp ? ', expected' : '') + '">' + (n || (ph ? '·' : '')) + '</button></td>';
+          var se = seasonOf(p), row = st[p.id] || { flowers: new Array(12).fill(0), photos: new Array(12).fill(0) }, t = total(p.id);
+          var exp = MONTHS.map(function (_, i) { return !!(se.flower[i] && !se.rest[i]); });
+          return '<tr><th scope="row" class="pn"><a href="#/plant/' + esc(p.id) + '">' + esc(p.en) + '</a><small>' + (t ? t + (t === 1 ? ' flower' : ' flowers') : 'No flowers yet') + '</small></th>' + MONTHS.map(function (m2, i) {
+            var n = row.flowers[i], ph = row.photos[i];
+            var cls = 'ym' + (exp[i] ? ' exp' + (i === 0 || !exp[i - 1] ? ' s' : '') + (i === 11 || !exp[i + 1] ? ' e' : '') : '') + (thisYear && i === nowM ? ' now' : '');
+            var inner = '<span class="fz">' + (n ? '<span class="fb ' + (n >= 6 ? 's3' : n >= 3 ? 's2' : 's1') + '">' + n + '</span>' : ph ? cam : '') + '</span><span class="band"></span>';
+            return '<td class="' + cls + '"><button type="button" data-ym="' + y + '-' + pad(i + 1) + '" data-p="' + esc(p.id) + '"' +
+              ' aria-label="' + esc(p.en) + ', ' + MONTH_FULL[i] + ': ' + n + (n === 1 ? ' flower' : ' flowers') + ', ' + ph + (ph === 1 ? ' photo' : ' photos') + (exp[i] ? ', in flowering season' : '') + '">' + inner + '</button></td>';
           }).join('') + '</tr>';
         }).join('') + '</tbody></table></div>' + (plants.length ? '' : '<p class="muted">No plants match the filters.</p>');
     }).catch(function (err) { $('#yearT').innerHTML = '<p class="hint bad">' + esc(err.message) + '</p>'; });

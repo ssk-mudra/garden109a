@@ -24,6 +24,7 @@
   --head:'Bricolage Grotesque','Segoe UI',system-ui,sans-serif;
   --body:Manrope,'Segoe UI',system-ui,sans-serif;
   --r:18px; --r-sm:12px;
+  --season:#F2CF73; --bloom:#C2416B; --now:#F1F6F2;
 }
 @media (prefers-color-scheme: dark){
   :root{
@@ -34,6 +35,7 @@
     --lotus:#F09AB8; --lotus-t:#3A1F29;
     --water:#7DB9E3; --water-t:#16303F;
     --warn-t:#3A2616; --warn:#F7CDA4; --err:#FF9A8F; --ok:#9AD6B6;
+    --season:#8A6A1F; --bloom:#E0648C; --now:#1F2A23;
   }
 }
 *{box-sizing:border-box}
@@ -320,16 +322,37 @@ details.addbox .form{padding:0 18px 18px}
 .cal-th img:nth-child(n+2){display:none}
 .cal-n{position:absolute;right:4px;top:3px;font-size:11px;font-weight:700;background:var(--leaf);color:#fff;border-radius:99px;padding:0 6px}
 @media (min-width:760px){.cal-c{min-height:96px}.cal-th img{width:calc(33% - 2px)}.cal-th img:nth-child(n+2){display:block}}
-.yt{min-width:720px}
-.yt th[scope=row]{white-space:nowrap;font-weight:600;background:var(--card)}
-.yt td{padding:3px;text-align:center}
-.yc{all:unset;box-sizing:border-box;width:100%;min-width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;cursor:pointer;background:var(--soft);color:var(--muted)}
-.yc:focus-visible{outline:2px solid var(--leaf)}
-.yc-exp{outline:2px dashed var(--line2);outline-offset:-3px}
-.yc-l1{background:#CFE3D6;color:#1F4D37}
-.yc-l2{background:#7FB896;color:#0E2B1C}
-.yc-l3{background:var(--leaf);color:#fff}
-.legend .yc-l1,.legend .yc-l2,.legend .yc-l3,.legend .yc-exp{width:16px;height:16px;border-radius:4px;display:inline-block}
+/* year view: season bar + flower circles */
+.ylg{display:flex;flex-wrap:wrap;gap:10px 26px;align-items:center;font-size:14px;color:var(--muted);margin:4px 0 12px}
+.ylg>span{display:inline-flex;align-items:center;gap:6px}
+.ylg .bar{display:inline-block;width:38px;height:7px;border-radius:99px;background:var(--season)}
+.ylg .fb{box-shadow:none}
+.ytw{border-radius:16px}
+.yt2{border-collapse:separate;border-spacing:0;min-width:780px;width:100%;font-size:14px}
+.yt2 th,.yt2 td{padding:0;border:none;background:none}
+.yt2 thead th{position:static;text-align:center;padding:10px 0 8px;font-size:12px;font-weight:700;color:var(--muted);background:var(--soft)}
+.yt2 thead th.now span{background:var(--ink);color:var(--ground);border-radius:99px;padding:2px 8px}
+.yt2 .pn{position:sticky;left:0;z-index:2;text-align:left;padding:8px 12px;min-width:132px;max-width:170px;background:var(--card);border-right:1px solid var(--line)}
+.yt2 thead .pn{background:var(--soft)}
+.yt2 .pn a{font-weight:700;color:var(--ink);text-decoration:none;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.yt2 .pn a:hover{text-decoration:underline}
+.yt2 .pn small{display:block;font-size:12px;color:var(--muted);font-weight:500}
+.yt2 tbody tr+tr th,.yt2 tbody tr+tr td{border-top:1px solid var(--soft)}
+.ym{height:62px;min-width:50px;background:var(--card);vertical-align:top}
+.ym.now{background:var(--now)}
+.ym button{-webkit-appearance:none;appearance:none;background:transparent;border:0;margin:0;padding:0;font:inherit;color:inherit;width:100%;height:62px;display:flex;flex-direction:column;justify-content:space-between;align-items:stretch;cursor:pointer;border-radius:0}
+.ym button:hover{background:rgba(0,0,0,.035)}
+.ym button:focus-visible{outline:2px solid var(--leaf);outline-offset:-3px;border-radius:10px}
+.ym .fz{display:flex;align-items:center;justify-content:center;height:44px}
+.ym .band{display:block;height:7px;margin:0 0 8px}
+.ym.exp .band{background:var(--season)}
+.ym.exp.s .band{margin-left:7px;border-top-left-radius:99px;border-bottom-left-radius:99px}
+.ym.exp.e .band{margin-right:7px;border-top-right-radius:99px;border-bottom-right-radius:99px}
+.fb{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:var(--bloom);color:#fff;font-weight:800;line-height:1;box-shadow:0 0 0 2px var(--card)}
+.fb.s1{width:24px;height:24px;font-size:12px}
+.fb.s2{width:31px;height:31px;font-size:13px}
+.fb.s3{width:38px;height:38px;font-size:14px}
+.cam{color:var(--muted)}
 
 /* colour tool, voice, review */
 .ctool{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;display:flex;flex-direction:column;gap:10px}
