@@ -2697,7 +2697,9 @@ function viewCalendar(arg) {
     $('#calBody').innerHTML = '<div class="cal-nav"><button type="button" class="icon-btn" data-cy="-1" aria-label="Previous year">' + icon('back') + '</button><h2>' + y + '</h2>' +
       '<button type="button" class="icon-btn" data-cy="1" aria-label="Next year">' + icon('next') + '</button></div>' +
       '<p class="muted sm">Flowers photographed each month (new photos only). Dotted boxes show the months the care guide expects flowers. Tap a box to see that month.</p><div id="yearT"><p class="muted">Loading…</p></div>' +
-      '<ul class="legend" style="margin-top:10px"><li><i class="yc-l1"></i>1–2</li><li><i class="yc-l2"></i>3–5</li><li><i class="yc-l3"></i>6 or more</li><li><i class="yc-exp"></i>Expected</li></ul>';
+      '<ul class="legend" style="margin-top:10px"><li><i class="yc-l1"></i>1–2 flowers</li><li><i class="yc-l2"></i>3–5</li><li><i class="yc-l3"></i>6 or more</li><li><i class="yc-exp"></i>Expected (care guide)</li>' +
+      '<li><b style="padding:0 4px">·</b>Photos, but none with a flower stage</li></ul>' +
+      '<p class="muted sm" style="margin-top:6px">Only new photos with a flower stage (Bud, Day 1 …, Full bloom, Fading, Dried, Seeds) are counted. Old photos (archive) are left out.</p>';
     api('getYearStats', S.pin, y, S.preview).then(function (st) {
       if (route().page !== 'calendar' || F.view !== 'year' || F.year !== y) return;
       var plants = S.boot.plants.filter(function (p) { return (!F.group || p.group === F.group) && (!F.plant || p.id === F.plant) && (st[p.id] || isFlowering(p)); });
