@@ -3,7 +3,7 @@
 'use strict';
 
 /* ================= basics ================= */
-var APP_VERSION = '10 (12 Oct 2026)';
+var APP_VERSION = '11 (12 Oct 2026)';
 var S = { boot: null, pin: '', preview: false, lists: {}, timer: null, toastT: null, pm: {}, vm: {}, add: null };
 try {
   S.pin = localStorage.getItem('g109a_pin') || '';
@@ -513,7 +513,7 @@ function render() {
   clearInterval(S.timer); S.timer = null;
   if (S.lbClose) { $('#lb').dataset.nav = '1'; S.lbClose(); }
   if (S.io) { S.io.disconnect(); S.io = null; }
-  app.onclick = null; app.onchange = null;
+  app.onclick = null; app.onchange = null; app.oninput = null;
   var r = route(), owner = isOwner();
   var pub = { home: viewHome, gallery: viewGallery, calendar: viewCalendar, plants: viewPlants, plant: viewPlant, varieties: viewVarieties, variety: viewVariety, fish: viewFish, signin: viewSignIn };
   var own = { capture: viewCapture, review: viewReview, add: viewAdd, photos: viewPhotos, photo: viewPhoto, log: viewLog, pots: viewPots, pot: viewPot, buy: viewBuy, inputs: viewInputs, masters: viewMasters, dash: viewDash };
@@ -1710,6 +1710,23 @@ var MASTER_LISTS = [['Colours', 'Colours'], ['Petal types', 'Petal types'], ['Ph
   ['Vendor types', 'Vendor types'], ['Input categories', 'Input categories'], ['Plant groups', 'Plant groups']];
 var LOCKED_UI = { 'Activities': ['Feed', 'Repot'], 'Fish events': ['Died', 'Moved out', 'Gifted'], 'Photo stages': ['Bud', 'Bud opening', 'Day 1'] };
 var REC = {
+  plant: { title: 'Plants', key: 'id', auto: true, search: 'Search plants (English, Tamil or botanical)', list: function () { return S.boot.plants || []; },
+    label: function (r) { return r.id + ' ' + r.en + (r.group ? ' · ' + r.group : ''); },
+    fields: [['en', 'English name'], ['ta', 'Tamil (script and English spelling, e.g. சம்பங்கி (Sampangi))'], ['bot', 'Botanical name'],
+      ['group', 'Group', 'list:Plant groups'], ['tags', 'Other tags (e.g. Flowering, Fragrant, Edible)'], ['suit', 'Chennai suitability', 'list:Chennai suitability'],
+      ['flowerSeason', 'Flowering / fruiting season (e.g. Most Jun–Oct)'], ['plantSeason', 'Planting season (e.g. Feb–Mar)'], ['family', 'Show to family', 'list:Yes / No'],
+      ['te', 'Telugu', 'text', 'more'], ['ml', 'Malayalam', 'text', 'more'], ['kn', 'Kannada', 'text', 'more'], ['hi', 'Hindi', 'text', 'more'],
+      ['pruneSeason', 'Pruning season', 'text', 'more'], ['sun', 'Sun', 'text', 'more'], ['water', 'Watering', 'textarea', 'more'],
+      ['mix', 'Potting mix', 'textarea', 'more'], ['potSize', 'Pot size', 'text', 'more'], ['feedW', 'Feed weekly', 'textarea', 'more'],
+      ['feedF', 'Feed fortnightly', 'textarea', 'more'], ['feedM', 'Feed monthly', 'textarea', 'more'], ['feedQ', 'Feed quarterly', 'textarea', 'more'],
+      ['feedY', 'Feed yearly', 'textarea', 'more'], ['prop', 'Propagation', 'textarea', 'more'], ['prune', 'Pruning method', 'textarea', 'more'],
+      ['pests', 'Pests and diseases', 'textarea', 'more'], ['repot', 'Repot every', 'text', 'more'], ['notes', 'Notes', 'textarea', 'more']] },
+  variety: { title: 'Varieties', key: 'id', auto: true, search: 'Search varieties (name, trade name or plant)', list: function () { return S.boot.varieties || []; },
+    label: function (r) { return r.id + ' ' + plantName(r.plantId) + ': ' + varLabel(r); },
+    fields: [['plantId', 'Plant', 'plant'], ['name', 'Variety name'], ['trade', 'Trade name (optional)'], ['colour', 'Main colour', 'list:Colours'],
+      ['colour2', 'Second colours (comma between, e.g. White, Yellow)'], ['petal', 'Petal type', 'list:Petal types'], ['family', 'Show to family', 'list:Yes / No'],
+      ['size', 'Flower size', 'text', 'more'], ['fragrance', 'Fragrance', 'text', 'more'], ['vendorId', 'Bought from', 'vendor', 'more'],
+      ['bought', 'Date bought', 'date', 'more'], ['cost', 'Cost (₹)', 'number', 'more'], ['notes', 'Notes', 'textarea', 'more']] },
   potCode: { title: 'Pot codes', key: 'code', keyLabel: 'Code (1 or 2 letters)', list: function () { return S.boot.potCodes || []; },
     label: function (r) { return r.code + ' – ' + r.type + (r.digits ? ' (' + r.digits + ' digits)' : ''); },
     fields: [['type', 'Pot type'], ['digits', 'Number digits', 'number'], ['notes', 'Notes']] },
@@ -1731,7 +1748,12 @@ function viewMasters() {
   S.openM = S.openM || {};
   var open = function (k) { return S.openM[k] ? ' open' : ''; };
   var st = (S.boot.meta && S.boot.meta.settings) || {};
+  var recBox = function (k) {
+    return '<details class="care" data-mk="R:' + k + '"' + open('R:' + k) + '><summary>' + esc(REC[k].title) + ' <span class="muted sm">' + REC[k].list().length + '</span></summary><div class="body" id="rec_' + k + '">' + recEditor(k, null) + '</div></details>';
+  };
   app.innerHTML = '<div class="page-h"><h1>Masters</h1><p class="muted">Add or change the choices used in the app. Hidden items stay in old records but are not offered for new ones.</p></div>' +
+    '<h2 style="margin:6px 0 10px">Plants and varieties</h2>' + recBox('plant') + recBox('variety') +
+    '<h2 style="margin:24px 0 10px">Settings</h2>' +
     '<details class="care" data-mk="S"' + open('S') + '><summary>Photo label</summary><div class="body"><form id="stForm" class="form"><div class="f2">' +
       '<div class="field"><label for="stBrand">Brand on photos</label><input id="stBrand" value="' + esc(st.brand || '@109A') + '"></div>' +
       '<div class="field"><label for="stPlace">Place shown on photos</label><input id="stPlace" value="' + esc(st.place || 'Chennai') + '"><p class="hint">Shown instead of the exact address.</p></div></div>' +
@@ -1740,7 +1762,7 @@ function viewMasters() {
     '<h2 style="margin:20px 0 10px">Choice lists</h2>' + MASTER_LISTS.map(function (m) {
       return '<details class="care" data-mk="L:' + esc(m[0]) + '"' + open('L:' + m[0]) + '><summary>' + esc(m[1]) + ' <span class="muted sm">' + ((S.boot.lists[m[0]] || []).length) + '</span></summary><div class="body">' + listEditor(m[0]) + '</div></details>';
     }).join('') +
-    '<h2 style="margin:28px 0 10px">Records</h2>' + Object.keys(REC).map(function (k) {
+    '<h2 style="margin:28px 0 10px">Records</h2>' + Object.keys(REC).filter(function (k) { return k !== 'plant' && k !== 'variety'; }).map(function (k) {
       return '<details class="care" data-mk="R:' + k + '"' + open('R:' + k) + '><summary>' + esc(REC[k].title) + ' <span class="muted sm">' + REC[k].list().length + '</span></summary><div class="body" id="rec_' + k + '">' + recEditor(k, null) + '</div></details>';
     }).join('');
   $$('details[data-mk]', app).forEach(function (d) { d.addEventListener('toggle', function () { S.openM[d.dataset.mk] = d.open; }); });
@@ -1751,6 +1773,7 @@ function viewMasters() {
     }).catch(function (err) { toast(err.message, 'err'); });
   });
   app.onclick = mastersClick;
+  app.oninput = function (e) { var q = e.target.closest('.rec-q'); if (q) filterRecList(q.dataset.kind); };
   app.onchange = function (e) {
     var sw = e.target.closest('.ml-sw'); if (!sw) return;
     var name = sw.closest('.ml-row').dataset.v;
@@ -1772,32 +1795,54 @@ function listEditor(name) {
     '<div class="ml-row"><input class="ml-new" placeholder="New ' + esc(name.toLowerCase().replace(/s$/, '')) + '" aria-label="New item name"><button type="button" class="btn sm btn-primary" data-ml="add">Add</button></div>' +
     '<label class="sw sm"><input type="checkbox" class="ml-upd" checked><span>When renaming, also change old records</span></label></div>';
 }
-function recEditor(kind, editKey) {
+function recField(kind, f, val) {
+  var id = 'rf_' + kind + '_' + f[0], type = f[2] || 'text', v = val(f[0]);
+  var lab = '<label for="' + id + '">' + esc(f[1]) + '</label>';
+  if (type.indexOf('list:') === 0) return '<div class="field">' + lab + '<select id="' + id + '" data-f="' + f[0] + '">' + listOptions(type.slice(5), v, 'Not set') + '</select></div>';
+  if (type === 'plant') return '<div class="field">' + lab + '<select id="' + id + '" data-f="' + f[0] + '">' + plantOptions(v) + '</select></div>';
+  if (type === 'vendor') return '<div class="field">' + lab + '<select id="' + id + '" data-f="' + f[0] + '"><option value="">Not set</option>' + (S.boot.vendors || []).map(function (x) {
+    return '<option value="' + esc(x.id) + '"' + (x.id === v ? ' selected' : '') + '>' + esc(x.name + (x.city ? ', ' + x.city : '')) + '</option>'; }).join('') + '</select></div>';
+  if (type === 'textarea') return '<div class="field rf-wide">' + lab + '<textarea id="' + id + '" data-f="' + f[0] + '" rows="2">' + esc(v) + '</textarea></div>';
+  return '<div class="field">' + lab + '<input id="' + id + '" data-f="' + f[0] + '" type="' + type + '"' + (type === 'number' ? ' inputmode="decimal" step="any"' : '') + ' value="' + esc(v) + '"></div>';
+}
+function recEditor(kind, editKey, q) {
   var R = REC[kind], rows = R.list(), cur = editKey !== null && editKey !== undefined ? rows.filter(function (r) { return String(r[R.key]) === String(editKey); })[0] : null;
   var isNew = editKey === '';
-  var list = '<ul class="rec-list">' + rows.map(function (r) {
-    return '<li><span>' + esc(R.label(r)) + '</span><button type="button" class="btn sm" data-rec="edit" data-kind="' + kind + '" data-key="' + esc(r[R.key]) + '">Edit</button></li>';
-  }).join('') + '</ul><button type="button" class="btn sm btn-primary" data-rec="new" data-kind="' + kind + '">' + icon('plus', 16) + 'Add new</button>';
-  if (!cur && !isNew) return list;
-  var val = function (k) { return cur ? cur[k] : ''; };
-  var keyField = R.auto ? '' : '<div class="field"><label for="rk_' + kind + '">' + esc(R.keyLabel) + '</label><input id="rk_' + kind + '" data-f="' + R.key + '" value="' + esc(val(R.key)) + '"' + (cur ? ' disabled' : '') + '></div>';
-  var fields = R.fields.map(function (f) {
-    var id = 'rf_' + kind + '_' + f[0], type = f[2] || 'text';
-    if (type.indexOf('list:') === 0) return '<div class="field"><label for="' + id + '">' + esc(f[1]) + '</label><select id="' + id + '" data-f="' + f[0] + '">' + listOptions(type.slice(5), val(f[0]), 'Not set') + '</select></div>';
-    return '<div class="field"><label for="' + id + '">' + esc(f[1]) + '</label><input id="' + id + '" data-f="' + f[0] + '" type="' + type + '"' + (type === 'number' ? ' inputmode="decimal" step="any"' : '') + ' value="' + esc(val(f[0])) + '"></div>';
-  }).join('');
-  return list + '<form class="form rec-form" data-kind="' + kind + '" data-new="' + (isNew ? '1' : '') + '" data-key="' + esc(cur ? cur[R.key] : '') + '" style="margin-top:14px">' +
-    '<h3>' + (isNew ? 'New' : 'Edit ' + esc(R.label(cur))) + '</h3><div class="f2">' + keyField + fields + '</div>' +
-    '<div class="row gap"><button class="btn btn-primary" type="submit">Save</button><button class="btn" type="button" data-rec="cancel" data-kind="' + kind + '">Cancel</button></div></form>';
+  var form = '';
+  if (cur || isNew) {
+    var val = function (k) { return cur ? (cur[k] == null ? '' : cur[k]) : ''; };
+    var keyField = R.auto ? '' : '<div class="field"><label for="rk_' + kind + '">' + esc(R.keyLabel) + '</label><input id="rk_' + kind + '" data-f="' + R.key + '" value="' + esc(val(R.key)) + '"' + (cur ? ' disabled' : '') + '></div>';
+    var main = R.fields.filter(function (f) { return f[3] !== 'more'; }).map(function (f) { return recField(kind, f, val); }).join('');
+    var more = R.fields.filter(function (f) { return f[3] === 'more'; }).map(function (f) { return recField(kind, f, val); }).join('');
+    form = '<form class="form rec-form" data-kind="' + kind + '" data-new="' + (isNew ? '1' : '') + '" data-key="' + esc(cur ? cur[R.key] : '') + '">' +
+      '<h3>' + (isNew ? 'New ' + esc(R.title.toLowerCase().replace(/s$/, '').replace(/ie$/, 'y')) : 'Edit ' + esc(R.label(cur))) + '</h3><div class="f2">' + keyField + main + '</div>' +
+      (more ? '<details class="addbox rf-more"' + (kind === 'plant' && !isNew ? ' open' : '') + '><summary>' + (kind === 'plant' ? 'More names and the care guide' : 'More details') + '</summary><div class="f2" style="padding:0 16px 16px">' + more + '</div></details>' : '') +
+      '<div class="row gap"><button class="btn btn-primary" type="submit">Save</button><button class="btn" type="button" data-rec="cancel" data-kind="' + kind + '">Cancel</button></div></form>';
+  }
+  var list = '<div class="row gap rec-top">' + (R.search ? '<input class="rec-q" data-kind="' + kind + '" type="search" placeholder="' + esc(R.search) + '" value="' + esc(q || '') + '" aria-label="' + esc(R.search) + '">' : '') +
+    '<button type="button" class="btn sm btn-primary" data-rec="new" data-kind="' + kind + '">' + icon('plus', 16) + 'Add new</button></div>' +
+    '<ul class="rec-list" data-kind="' + kind + '">' + rows.map(function (r) {
+      var extra = kind === 'plant' ? [r.ta, r.bot].join(' ') : kind === 'variety' ? plantName(r.plantId) : '';
+      return '<li data-s="' + esc((R.label(r) + ' ' + extra).toLowerCase()) + '"><span>' + esc(R.label(r)) + '</span><button type="button" class="btn sm" data-rec="edit" data-kind="' + kind + '" data-key="' + esc(r[R.key]) + '">Edit</button></li>';
+    }).join('') + '</ul>';
+  return form + list;
+}
+function filterRecList(kind) {
+  var inp = $('.rec-q[data-kind="' + kind + '"]'); if (!inp) return;
+  var t = inp.value.trim().toLowerCase();
+  $$('.rec-list[data-kind="' + kind + '"] li', app).forEach(function (li) { li.hidden = !!t && li.dataset.s.indexOf(t) < 0; });
 }
 function mastersClick(e) {
   var b = e.target.closest('[data-ml],[data-rec]'); if (!b || route().page !== 'masters') return;
   if (b.dataset.rec) {
     var kind = b.dataset.kind, box = $('#rec_' + kind);
-    if (b.dataset.rec === 'edit') box.innerHTML = recEditor(kind, b.dataset.key);
-    else if (b.dataset.rec === 'new') box.innerHTML = recEditor(kind, '');
-    else box.innerHTML = recEditor(kind, null);
+    var q0 = ($('.rec-q[data-kind="' + kind + '"]') || {}).value || '';
+    if (b.dataset.rec === 'edit') box.innerHTML = recEditor(kind, b.dataset.key, q0);
+    else if (b.dataset.rec === 'new') box.innerHTML = recEditor(kind, '', q0);
+    else box.innerHTML = recEditor(kind, null, q0);
+    filterRecList(kind);
     var form = $('.rec-form', box);
+    if (form && form.scrollIntoView) form.scrollIntoView({ block: 'start' });
     if (form) { var first = $('input:not([disabled]),select', form); if (first) first.focus(); form.addEventListener('submit', saveRec); }
     return;
   }

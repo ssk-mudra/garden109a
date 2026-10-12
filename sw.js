@@ -1,7 +1,7 @@
 /* Garden@109A – keeps the app screens on the phone so it opens fast and works offline.
    Every time the app opens online, it checks GitHub for newer files (no stale copies).
    Garden data always comes fresh from Google; it is never cached here. */
-const CACHE = 'g109a-v10';
+const CACHE = 'g109a-v11';
 const SHELL = ['./', './index.html', './app.js', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', function (e) {

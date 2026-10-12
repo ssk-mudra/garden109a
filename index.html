@@ -412,7 +412,13 @@ details.addbox .form{padding:0 18px 18px}
 .ml-row .ml-name,.ml-row .ml-new{flex:1 1 180px;min-height:44px}
 .ml-hid .ml-name{opacity:.55;text-decoration:line-through}
 .ml-sw{width:44px;height:44px;padding:3px;border-radius:10px;border:1px solid var(--line2);background:var(--card);cursor:pointer}
-.rec-list{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-direction:column;gap:6px}
+.rec-list{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:420px;overflow-y:auto}
+.rec-list li[hidden]{display:none}
+.rec-top{margin-top:4px}
+.rec-top .rec-q{flex:1 1 240px;min-height:44px}
+.rec-form{margin:4px 0 14px;max-width:none;background:var(--soft);border-radius:14px;padding:14px}
+.rec-form .rf-wide{grid-column:1/-1}
+.rf-more>summary{min-height:48px}
 .rec-list li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--soft)}
 
 /* motion */
@@ -446,8 +452,8 @@ details.addbox .form{padding:0 18px 18px}
 </button>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <div id="lb" class="lb" hidden role="dialog" aria-modal="true" aria-label="Photo viewer"></div>
-<script src="config.js?v=10"></script>
-<script src="app.js?v=10"></script>
+<script src="config.js?v=11"></script>
+<script src="app.js?v=11"></script>
 <script>
 if ('serviceWorker' in navigator) {
   var hadController = !!navigator.serviceWorker.controller, reloaded = false;
